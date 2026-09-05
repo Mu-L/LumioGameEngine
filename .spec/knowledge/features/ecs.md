@@ -688,7 +688,7 @@ var restored = WorldManager.CreateFromSnapshot(snapshotBytes);   // 新世界；
 | 轻量哈希 / 全量哈希 | 每帧算一小撮字段看有没有歪 / 需要时算全部，用来定位歪在哪 |
 ## ADR-060 R5-01 contract projection
 
-The World Manager is the sole packet owner. C-1 uses Welcome, WorldChange, InputCommand, ConnectionSuperseded, and Error; WorldChange carries creates, field changes, destroys, and ClientRpc records in one ordered stream. NetEntityId and connection references are 128-bit values. C-2 admission returns accepted or a rejection only; Welcome delivers the assigned id and generation. Derived entityType comes from World.TypeOf and tombstoned is derived from the issued counter and live set.
+The World Manager is the sole packet owner. C-1 uses Welcome, WorldChange, InputCommand, ConnectionSuperseded, and Error; WorldChange carries creates, field changes, destroys, and ClientRpc records in one ordered stream. NetEntityId and connection references are 128-bit values. C-2 admission returns accepted or a rejection only; Welcome delivers the assigned id and generation. Derived entityType comes from World.TypeOf and tombstoned is derived from the reserved-through watermark for the NetEntityId instance and live set.
 | 确认世界 / 预测世界 | 客户端的两份世界：服务器说的 / 自己猜的；每包到了预测世界从确认世界重建再重放没确认的输入 |
 | Scope.None | 不发给任何人的 Sync 字段：只为存档记账，写法与上网字段一样 |
 | 占段发号 | 发号器先在盘上占一批号再发；崩了从占到的下一个号开始，客户端见过的号永不再发 |

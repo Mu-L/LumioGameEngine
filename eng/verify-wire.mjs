@@ -800,7 +800,11 @@ function checkEntityBindingContract(contract, fileName, problems) {
   }
   if (fileName === 'entity-binding-and-query-v1.json') {
     if (!contract.derived?.entityType || !String(contract.derived.entityType.source).includes('TypeOf')) problem('derived.entityType must come from World.TypeOf');
-    if (!String(contract.derived?.tombstoned ?? '').includes('next-issued-counter')) problem('derived.tombstoned must use counter < next-issued-counter and live-set absence');
+    const tombstoneRule = String(contract.derived?.tombstoned ?? '');
+    if (!tombstoneRule.includes('reserved-through') || !tombstoneRule.includes('counter <=') || !tombstoneRule.includes('not in live entities')) {
+      problem('derived.tombstoned must use the reserved-through watermark, counter <= boundary, and live-set absence');
+    }
+    if (tombstoneRule.includes('next-issued-counter')) problem('derived.tombstoned must not use legacy next-issued-counter prose');
     if (!contract.claim?.credential || !String(contract.claim.credential).includes('claimBy')) problem('claim credential must use target entity claimBy named-list field');
   }
   if (fileName === 'entity-binding-and-query-v1.json' && decls.sha256 !== N04_ATTRIBUTE_DECLARATIONS_SHA256) {
@@ -1358,9 +1362,20 @@ test('R5-01 C-2 admit is asynchronous and declaration projections are derived', 
   assert.equal(Object.prototype.hasOwnProperty.call(contract.binding.operations, 'listBindings'), false);
   assert.equal(contract.attributeDeclarations.table.some((row) => row.attributeId.startsWith('EntityIdentity.')), false);
   assert.ok(contract.derived.entityType.source.includes('TypeOf'));
-  assert.match(contract.derived.tombstoned, /next-issued-counter/);
+  assert.match(contract.derived.tombstoned, /reserved-through/);
+  assert.match(contract.derived.tombstoned, /counter <=/);
+  assert.doesNotMatch(contract.derived.tombstoned, /next-issued-counter/);
   assert.match(contract.claim.credential, /claimBy/);
   assert.deepEqual(validateContract(contract, 'entity-binding-and-query-v1.json').problems, []);
+});
+
+test('C-2 tombstone watermark rejects legacy next-issued-counter derivation', async () => {
+  const contract = await loadBindingContract();
+  const legacy = JSON.parse(JSON.stringify(contract));
+  legacy.derived.tombstoned = 'counter < next-issued-counter && netEntityId not in live entities';
+  const { problems } = validateContract(legacy, 'entity-binding-and-query-v1.json');
+  assert.ok(problems.some((problem) => problem.includes('reserved-through watermark')));
+  assert.ok(problems.some((problem) => problem.includes('legacy next-issued-counter')));
 });
 
 test('R5-01 C-2 declares the closed in-process Runtime Manager controls table', async () => {

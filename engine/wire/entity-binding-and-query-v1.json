@@ -328,12 +328,12 @@
       "IdentityComponent.accountId 已在生成声明表中，属性为 server-only / not-replicated；server-authoritative 可读，client-replica 以 invisible 结局返回，不得按 undeclared_attribute 处理。",
       "IdentityComponent.friends 和 IdentityComponent.name 均为 room-public；IdentityComponent.realName 为 claim-scoped；三者均按生成声明表的 visibility 投影规则发送。",
       "派生项：entityType 不作为声明表行，由 World.TypeOf(netEntityId) 回答 player | bot；客户端不得提交或覆盖该值。",
-      "派生项：tombstoned 当计数器小于下一个已发号且该 NetEntityId 不在活体集合时成立；不存墓碑集合，永不解析为替代实体。"
+      "派生项：tombstoned 当该 NetEntityId 实例的计数器不大于 reserved-through watermark 且该 NetEntityId 不在活体集合时成立；不存墓碑集合，永不解析为替代实体。"
     ]
   },
   "derived": {
     "entityType": { "source": "World.TypeOf(netEntityId)", "values": ["player", "bot"] },
-    "tombstoned": "counter < next-issued-counter && netEntityId not in live entities"
+    "tombstoned": "counter <= reserved-through watermark for this NetEntityId instance && netEntityId not in live entities"
   },
   "claim": {
     "credential": "目标实体上 claimBy 指名的名单字段（例如 Friends）中的成员值",
@@ -486,7 +486,7 @@
     },
     {
       "name": "outcome_non_existent",
-      "given": "netEntityId=N9 在 room-01 从未存在（或墓碑遗忘后）",
+      "given": "netEntityId=N9 在 room-01 的 counter 高于该实例的 reserved-through watermark（或墓碑遗忘后）",
       "when": "任一作用域解析/查询 N9",
       "expect": "non_existent",
       "then": "显式 non_existent；不返回替代实体。"
@@ -514,7 +514,7 @@
     },
     {
       "name": "outcome_tombstoned",
-      "given": "N1 已销毁，墓碑在保留期内",
+      "given": "N1 已销毁，counter 不大于该实例的 reserved-through watermark，且墓碑仍在保留期内",
       "when": "任一作用域解析/查询 N1",
       "expect": "tombstoned",
       "then": "显式 tombstoned；永不复活、永不改指；重登产生的后继实体是新的 NetEntityId。"
