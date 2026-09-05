@@ -1,6 +1,6 @@
 ---
 name: 2026-09-05-voxelengine-w0-card-and-kickoff
-description: VoxelEngine 补单草稿——W0「退出旧合同制」卡面（待授权建卡）、开工提示词与 15 张蓝图卡的验收跑批提示词；派 VoxelEngine 清理或验收活时查
+description: VoxelEngine 补单——W0 清理卡 R-00474 卡面与开工提示词、15 张蓝图卡的验收跑批提示词、三张架构仓后续卡（R-00476 / 477 / 479）的开工顺序；派 VoxelEngine 清理或验收活时查
 metadata:
   type: doc
   status: 设计中
@@ -8,7 +8,7 @@ metadata:
 
 # VoxelEngine · W0 清理卡卡面、开工提示词与验收跑批提示词
 
-> 来源：[`reviews/2026-09-05-engine-repos-progress-assessment.md`](../reviews/2026-09-05-engine-repos-progress-assessment.md) §2.2 与 §6 D7 ~ D11（**尚未裁决**，本文按建议方向预写；Owner 改口则同步改）。卡面按 workflow-ops `card-spec`（背景 / 目标 / 验收 / 边界）。**未落单**：建卡须 Owner 逐次授权。与 NativeCore 一站的 [`2026-09-05-nativecore-w0-card-and-kickoff.md`](2026-09-05-nativecore-w0-card-and-kickoff.md) 同一格式。
+> 来源：[`reviews/2026-09-05-engine-repos-progress-assessment.md`](../reviews/2026-09-05-engine-repos-progress-assessment.md) §2.2 与 §6 D7 ~ D11（D7 已执行；**D8 已裁决：三层全清、不留兼容（Owner 2026-09-06）**；D9 部分执行；D10 / D11 待裁）。卡面按 workflow-ops `card-spec`（背景 / 目标 / 验收 / 边界）。**R-00474 已建**（`01a0724d-35ce-7b54-a285-e17ce638a901`，RM-00003，P0），线上正文已于 2026-09-06 按本节卡面重写，10 条验收项已建（读回 10 / 10）。同日在 RM-00001 建了三张架构仓后续卡：**R-00476**（sdk-native 去 V1.4 名字，A-W0）、**R-00477**（物理三槽路由，A-5）、**R-00479**（契约三处缺陷，C-FIX），卡面即执行提示词，顺序见 §四。与 NativeCore 一站的 [`2026-09-05-nativecore-w0-card-and-kickoff.md`](2026-09-05-nativecore-w0-card-and-kickoff.md) 同一格式。
 
 ## 一、卡面（RM-00003 · 已建：R-00474）
 
@@ -56,7 +56,7 @@ https://lumiogamesengine.workflow.games/requirements/01a0724d-35ce-7b54-a285-e17
    SHA-256 与本仓 crates/lumio-voxel-contracts/wire/voxel-world-v1.json 相同（不同 = 契约又动了，先停）。
 3. 架构仓 engine/native/modules/sdk-native/Cargo.toml 仍以路径依赖引用本仓 lumio-voxel-world / domain / ops / contracts 四个 crate
    （这是本仓唯一消费者的形状）。
-4. 用 workflow-execute 读全 R-00474：正文 + 验收项 + 评论；读不到就停。
+4. 用 workflow-execute 读全 R-00474：正文 + 验收项 + 评论；读不到就停。验收项必须是 10 条且与下文「指路」的三层一致；若线上仍是 0 条或正文只有「删镜像、改 CI、改 README 与注释」五条，说明卡面还没按 Owner 2026-09-06 的 D8 裁决重写，停下回报，不得按窄口径开工。
 
 【指路】
 - 卡面正文就是任务书：三层清理按验收 1 → 10 的顺序做。第 1 层是文档 / CI / 镜像 / 旧模块图 / 空壳 crate；第 2 层删 generated/ 树、
@@ -70,12 +70,12 @@ https://lumiogamesengine.workflow.games/requirements/01a0724d-35ce-7b54-a285-e17
 - 本仓 .spec/decisions/ 新增一条 ADR 记录这次退出（编号现查最高号），0007 / 0009 / 0010 / 0013 只加「被 NNNN 取代」，不改写。
 
 【立规】
-- 领卡先经 Workflow 流转「实现中」并写 reason；改动在 feat/r-00xxx-exit-legacy-contract 分支，先 push 再回写证据。
+- 领卡先经 Workflow 流转「实现中」并写 reason；改动在 feat/r-00474-exit-legacy-contract 分支，先 push 再回写证据。
 - 小步提交，每层一个提交；每次提交前 cargo fmt --all -- --check、cargo clippy --workspace --all-targets --all-features -- -D warnings、
   cargo check --workspace --no-default-features、cargo test --workspace --all-features（LUMIO_ENGINE_WIRE_DIR 指向架构仓 engine/wire）、
   cargo run -p lumio-voxel-test-support --example check-crate-dag、node .spec/tools/spec-lint.mjs 全部 exit 0。
   测试证据必须是本机实跑的命令与输出，cargo check 不算；被删用例逐条列清单。
-- 交付 = 改动清单 + 验证证据（命令 + 关键输出）+ known gaps + 沉淀落点（本仓新 ADR），写成 PR 描述并同步为 R-00xxx 的证据评论，
+- 交付 = 改动清单 + 验证证据（命令 + 关键输出）+ known gaps + 沉淀落点（本仓新 ADR），写成 PR 描述并同步为 R-00474 的证据评论，
   评论只引用已推送 origin 的提交号；做完流转「验收中」，「已完成」由总调度核验后流转。走 PR，不直接推 main。
 - 遇到 bug 或测试失败先找根因再改；同一问题修三次不成，停下上报。
 
@@ -97,15 +97,28 @@ R-00441 已 6/6 passed，不重跑。
 【守门】
 1. LumioVoxelEngine origin/main = e5c056e 或其后继；LumioGameEngine origin/main = 4d6d2c3 或其后继；两仓本地 main 与 origin 同步。
 2. 两仓各建一个只读快照（git archive 物化到 ~/LumioGames/.qa-<仓>-<短号>/），验证全部跑在快照里，不在主工作区跑构建（另一会话可能在用）。
+   快照必须直接放在 ~/LumioGames 下：架构仓 sdk-native 以 ../../../../../LumioNativeCore 与 ../../../../../LumioVoxelEngine 路径依赖同级仓，放深一层 cargo 就找不到（R-00439 深审就是这样跑不了 cargo / dev-run 的）。
+   eng/dev-run.sh 只支持 Linux，macOS 上它直接 BLOCKED 退出；这时相关验收项只能标 blocked 并写明「需 Linux / Windows 宿主」，不得标 passed。
 3. 用 workflow-execute 四路读全每张卡（正文 + 验收项 + 评论 + 附件）；任一张状态不是「验收中」就停下回报，不自行流转。
 4. GET /projects/<projectId>/acceptance/types 现查验收状态 id，不猜。
 
 【怎么跑】
 - 每条验收项 = 一条可执行断言：能用 cargo test / node --test / dotnet test 定位到的就跑那条测试并贴输出；要 grep 代码或契约的就贴 grep；
   跑不出来的标 blocked 并写明缺什么（例如 R-00440 验收 2「超出驻留预算的 pin 当场失败」在契约无预算常量时只能 blocked，不得凭本地上限判 passed）。
-- 通过的验收项逐条改 passed，失败的改 failed 并附输出；每张卡一条汇总评论（实跑命令 + 通过 / 失败 / blocked 计数 + 快照对应的 origin 提交号）。
+- 门只跑绿不算数，凡是「门禁 / 生成器 / 一致性测试」类的验收项要各做一次反例探针：在快照的临时副本里故意改坏一处源（例如把 wire 副本的 cellOffset stride 从 256 改成 1、把 native-abi.json 根表两个槽对调、把一个错误码改名），确认对应的测试或生成器变红并贴输出，改坏的副本用完即删。R-00439 的复审就是靠探针发现四处门形同虚设，绿门本身证明不了门在。
+- 通过的验收项逐条改 passed，失败的改 failed 并附输出；每张卡一条汇总评论（实跑命令 + 通过 / 失败 / blocked 计数 + 探针结果 + 快照对应的 origin 提交号）。
 - 全部 passed 的卡流转「已完成」并写 reason；有 failed 的卡不流转，回报主 loop。
 
 【禁区】
 - 不改两仓任何文件、不 push、不建卡；不替 Owner 决定契约缺陷怎么修；不把 blocked 写成 passed。
 ```
+
+## 四、三张架构仓后续卡的开工顺序（另开窗口，工作目录 `~/LumioGames/LumioGameEngine`；卡面即任务书，不再另写提示词）
+
+| 顺序 | 卡 | 何时可派 | 守门第一步 | 分支 |
+| --- | --- | --- | --- | --- |
+| 1 | **R-00479** 契约三处缺陷（`01a07267-5859-7556-acbd-97bece5b0324`） | 立即；与其他卡无文件重叠 | 架构仓 origin/main 是 `fc02870` 或其后继；`node eng/verify-wire.mjs` 与 `node --test eng/generate-abi.test.mjs` 当前全绿 | `feat/r-00479-voxel-contract-fixes`，第 7 条在 VoxelEngine 另开 PR |
+| 2 | **R-00477** 物理三槽路由（`01a07267-2e96-70bd-88a5-014171b29e3f`） | R-00443 与 R-00456 的验收项经 V-QA 实跑通过之后 | 两张前置卡状态为「已完成」；VoxelEngine origin/main 含 `physics_query.rs`（`e5c056e` 或其后继） | `feat/r-00477-physics-slot-routing` |
+| 3 | **R-00476** sdk-native 去 V1.4 名字（`01a07267-140d-72c1-a080-ec7c49212d9e`） | R-00474 第三层合入 VoxelEngine origin/main 之后 | 用 VoxelEngine origin/main 做路径依赖时 `cargo build -p lumio-engine-native` 因缺 `Generated*` 类型而失败（这正是本卡要修的），且 R-00474 已流转「验收中」 | `feat/r-00476-sdk-native-live-contract-only` |
+
+三张卡的公共纪律与 §二「立规 / 禁区」相同：领卡先流转「实现中」，先 push 再回写证据，评论只引用 origin 提交号，走 PR 不直接推 main，做完流转「验收中」；`native-abi.json` 在 R-00476 / R-00477 里逐字节不变，只有 R-00479 允许经 `generate-abi.mjs` 重生成。
