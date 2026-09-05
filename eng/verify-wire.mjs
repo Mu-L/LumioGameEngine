@@ -1113,7 +1113,7 @@ function checkGameplayEnvelopeContract(contract, fileName, problems) {
       if (digest !== example.payloadSha256) problem(`hash.examples ${example.mappingId} does not recompute`);
     }
     const names = new Set((contract.testCases ?? []).map((item) => item.name));
-    for (const required of ['welcome/128-bit-self', 'world-change/creation-field-rpc', 'world-change/applied-input-sequence', 'world-change/destroy-left-aoi', 'world-change/destroy-terminated', 'world-change/destroy', 'world-change/field-sync', 'world-change/field-correction', 'world-change/owner-visible-to-bound-observer', 'world-change/rpc-args-scope', 'input/sequence-1', 'input/chat']) if (!names.has(required)) problem(`testCases missing ${required}`);
+    for (const required of ['welcome/128-bit-self', 'world-change/creation-field-rpc', 'world-change/applied-input-sequence', 'world-change/rejected-input-advances-sequence', 'world-change/destroy-left-aoi', 'world-change/destroy-terminated', 'world-change/destroy', 'world-change/field-sync', 'world-change/field-correction', 'world-change/owner-visible-to-bound-observer', 'world-change/rpc-args-scope', 'input/sequence-1', 'input/chat']) if (!names.has(required)) problem(`testCases missing ${required}`);
     const invalidNames = new Set((contract.invalidCases ?? []).map((item) => item.name));
     for (const required of ['sequence/world-change-before-welcome', 'world-change/owner-leaked-to-non-owner', 'input/missing-sequence', 'sequence/input-gap', 'sequence/input-regressed', 'world-change/missing-applied-input-sequence', 'world-change/destroy-missing-reason', 'world-change/destroy-legacy-shape', 'world-change/rpc-args-legacy-hex', 'world-change/rpc-scope-missing', 'world-change/rpc-scope-invalid']) if (!invalidNames.has(required)) problem(`invalidCases missing ${required}`);
     for (const [mappingId, mapping] of Object.entries(contract.mappings ?? {})) {
@@ -1307,7 +1307,7 @@ test('R5-01 C-1 requires contiguous per-connection input sequences', async () =>
 
 test('R5-01 C-1 requires appliedInputSequence, destroy reasons, and scoped RPC argument arrays', async () => {
   const contract = await loadEnvelopeContract();
-  for (const name of ['world-change/applied-input-sequence', 'world-change/destroy-left-aoi', 'world-change/destroy-terminated', 'world-change/rpc-args-scope']) {
+  for (const name of ['world-change/applied-input-sequence', 'world-change/rejected-input-advances-sequence', 'world-change/destroy-left-aoi', 'world-change/destroy-terminated', 'world-change/rpc-args-scope']) {
     const valid = contract.testCases.find((item) => item.name === name);
     assert.ok(valid, `missing positive fixture ${name}`);
     assert.doesNotThrow(() => admitMessage(contract, valid.message));
@@ -1318,6 +1318,9 @@ test('R5-01 C-1 requires appliedInputSequence, destroy reasons, and scoped RPC a
     assert.throws(() => admitMessage(contract, invalid.payload), (error) => error instanceof Rejection && error.code === invalid.expectedRejection);
   }
   assert.ok(contract.mappings?.['server.rpc'], 'server.rpc mapping must be registered');
+  const rejected = contract.testCases.find((item) => item.name === 'world-change/rejected-input-advances-sequence');
+  assert.equal(rejected.given.inputOutcome, 'rejected');
+  assert.equal(rejected.message.appliedInputSequence, rejected.given.sequence);
 });
 
 test('R5-01 C-1 recomputes command payload hashes and rejects mismatches', async () => {
@@ -1759,6 +1762,13 @@ test('C-2 readRules expose the generated IdentityComponent fields', async () => 
     assert.ok(rules.some((rule) => rule.includes(field)), `readRules missing ${field}`);
   }
   assert.ok(rules.some((rule) => rule.includes('IdentityComponent.accountId') && rule.includes('server-only')));
+  const visibilityById = new Map(contract.attributeDeclarations.table.map((row) => [row.attributeId, row.visibility]));
+  assert.equal(visibilityById.get('IdentityComponent.friends'), 'room-public');
+  assert.equal(visibilityById.get('IdentityComponent.name'), 'room-public');
+  assert.equal(visibilityById.get('IdentityComponent.realName'), 'claim-scoped');
+  const visibilityRule = rules.find((rule) => rule.includes('IdentityComponent.friends'));
+  assert.match(visibilityRule, /friends.*name.*room-public/);
+  assert.match(visibilityRule, /realName.*claim-scoped/);
   const account = (contract.invalidCases ?? []).find((item) => item.payload?.attributeId === 'IdentityComponent.accountId');
   assert.equal(account, undefined, 'generated IdentityComponent.accountId must not be marked undeclared');
   const { problems } = validateContract(contract, 'entity-binding-and-query-v1.json');

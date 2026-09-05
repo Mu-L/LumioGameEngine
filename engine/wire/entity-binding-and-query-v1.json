@@ -326,7 +326,7 @@
       "visibility=server-only 或 replication=not-replicated 的属性对 client-replica 作用域以 invisible 结局返回；实体本身不可见时同样 invisible。",
       "实体可见但属性可见性类别与调用方不符（如 claim-scoped 未持 claim）以 unauthorized 结局返回。",
       "IdentityComponent.accountId 已在生成声明表中，属性为 server-only / not-replicated；server-authoritative 可读，client-replica 以 invisible 结局返回，不得按 undeclared_attribute 处理。",
-      "IdentityComponent.friends、IdentityComponent.name、IdentityComponent.realName 均为已生成声明；分别遵循 Scope.Owner、Scope.Room、Scope.Claim 的投影规则。",
+      "IdentityComponent.friends 和 IdentityComponent.name 均为 room-public；IdentityComponent.realName 为 claim-scoped；三者均按生成声明表的 visibility 投影规则发送。",
       "派生项：entityType 不作为声明表行，由 World.TypeOf(netEntityId) 回答 player | bot；客户端不得提交或覆盖该值。",
       "派生项：tombstoned 当计数器小于下一个已发号且该 NetEntityId 不在活体集合时成立；不存墓碑集合，永不解析为替代实体。"
     ]
