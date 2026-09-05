@@ -62,7 +62,16 @@ export function admitMessage(contract, message) {
 export function admitSequence(contract, messages) {
   if (!Array.isArray(messages) || messages.length === 0) throw new Rejection('bad_envelope', 'packet sequence must be non-empty');
   if (messages[0]?.messageType !== 'Welcome') throw new Rejection('bad_envelope', 'Welcome must precede WorldChange');
-  for (const message of messages) admitMessage(contract, message);
+  let nextInputSequence = 1;
+  for (const message of messages) {
+    admitMessage(contract, message);
+    if (message.messageType === 'InputCommand') {
+      if (message.sequence !== nextInputSequence) {
+        throw new Rejection('bad_envelope', `InputCommand.sequence must be contiguous from 1 (expected ${nextInputSequence}, got ${message.sequence})`);
+      }
+      nextInputSequence += 1;
+    }
+  }
 }
 
 // ---------- LumioBinV1 (ADR-047 subset used by declared mappings) ----------
@@ -354,11 +363,22 @@ function checkBlockArray(blocks, contract, context) {
 function checkMessageSemantics(message, contract) {
   const t = message.messageType;
   if (t === 'InputCommand') {
+    if (message.sequence < 1) throw new Rejection('bad_envelope', 'InputCommand.sequence must start at 1');
     if (!Array.isArray(message.commands)) throw new Rejection('bad_envelope', 'commands: required array missing');
     checkBlockArray(message.commands, contract, { allowedKinds: new Set(['command']), unknownCode: 'unknown_command_type', path: 'commands' });
     const maxCommands = contract.boundedInput?.rules?.maxCommandsPerEnvelope;
     if (typeof maxCommands === 'number' && message.commands.length > maxCommands) {
       throw new Rejection('bad_envelope', `commands length ${message.commands.length} exceeds maxCommandsPerEnvelope=${maxCommands}`);
+    }
+  }
+  if (t === 'WorldChange') {
+    const maxRpcArguments = contract.boundedInput?.rules?.maxRpcArguments;
+    if (typeof maxRpcArguments === 'number') {
+      for (const [index, rpc] of message.rpcs.entries()) {
+        if (rpc.args.length > maxRpcArguments) {
+          throw new Rejection('bad_envelope', `rpcs[${index}].args length ${rpc.args.length} exceeds maxRpcArguments=${maxRpcArguments}`);
+        }
+      }
     }
   }
 }
@@ -649,7 +669,7 @@ const BINDING_CONTRACT_ID = 'lumio.entity-binding-query.v1';
 const BINDING_RECORD_FIELDS = ['accountId', 'roomId', 'netEntityId', 'entityType', 'connectionGeneration'];
 const BINDING_RECORD_FIELD_SET = new Set(BINDING_RECORD_FIELDS);
 const DECLARATION_ROW_KEYS = ['attributeId', 'persistence', 'replication', 'valueType', 'visibility'];
-const N04_ATTRIBUTE_DECLARATIONS_SHA256 = 'fbe1d5e68533dff6f36605d42727bf2cf29382f72c3b73c7747355471c296c9c';
+const N04_ATTRIBUTE_DECLARATIONS_SHA256 = '851ad19af23c9c300190e2a2c19ff25a86ea62c0fd85accc0fcfdf682d94c7d6';
 
 function canonicalizeDeclarationTable(table) {
   if (!Array.isArray(table)) throw new Error('declaration table must be an array');
@@ -772,12 +792,19 @@ function checkEntityBindingContract(contract, fileName, problems) {
   if (decls.sha256 !== digest) {
     problem(`attributeDeclarations.sha256 ${JSON.stringify(decls.sha256)} does not recompute from table (${digest})`);
   }
+  if (fileName === 'entity-binding-and-query-v1.json' && JSON.stringify(decls.table) !== JSON.stringify(RUNTIME_DECLARATIONS)) {
+    problem('attributeDeclarations.table must exactly match the six generated Runtime declaration rows');
+  }
   if (fileName === 'entity-binding-and-query-v1.json' && (ids.has('EntityIdentity.entityType') || ids.has('EntityIdentity.claimedMark') || ids.has('EntityIdentity.unmappedMark') || ids.has('ChatComponent.lastMessagePersistOnly'))) {
     problem('attributeDeclarations.table must omit EntityIdentity.* and lastMessagePersistOnly; entityType is derived');
   }
   if (fileName === 'entity-binding-and-query-v1.json') {
     if (!contract.derived?.entityType || !String(contract.derived.entityType.source).includes('TypeOf')) problem('derived.entityType must come from World.TypeOf');
-    if (!String(contract.derived?.tombstoned ?? '').includes('next-issued-counter')) problem('derived.tombstoned must use counter < next-issued-counter and live-set absence');
+    const tombstoneRule = String(contract.derived?.tombstoned ?? '');
+    if (!tombstoneRule.includes('reserved-through') || !tombstoneRule.includes('counter <=') || !tombstoneRule.includes('not in live entities')) {
+      problem('derived.tombstoned must use the reserved-through watermark, counter <= boundary, and live-set absence');
+    }
+    if (tombstoneRule.includes('next-issued-counter')) problem('derived.tombstoned must not use legacy next-issued-counter prose');
     if (!contract.claim?.credential || !String(contract.claim.credential).includes('claimBy')) problem('claim credential must use target entity claimBy named-list field');
   }
   if (fileName === 'entity-binding-and-query-v1.json' && decls.sha256 !== N04_ATTRIBUTE_DECLARATIONS_SHA256) {
@@ -786,9 +813,13 @@ function checkEntityBindingContract(contract, fileName, problems) {
 
   const readRules = decls.readRules;
   const accountRule = Array.isArray(readRules)
-    ? readRules.find((rule) => typeof rule === 'string' && rule.includes('EntityIdentity.accountId'))
+    ? readRules.find((rule) => typeof rule === 'string' && rule.includes(fileName === 'entity-binding-and-query-v1.json' ? 'IdentityComponent.accountId' : 'EntityIdentity.accountId'))
     : null;
-  if (!accountRule || !accountRule.includes('undeclared_attribute')) {
+  if (fileName === 'entity-binding-and-query-v1.json') {
+    if (!accountRule || !accountRule.includes('server-only')) {
+      problem('readRules must expose IdentityComponent.accountId as server-only, not undeclared_attribute');
+    }
+  } else if (!accountRule || !accountRule.includes('undeclared_attribute')) {
     problem('readRules must say EntityIdentity.accountId is undeclared_attribute');
   }
 
@@ -1030,7 +1061,15 @@ function checkEntityBindingContract(contract, fileName, problems) {
 // ---------- Contract validation ----------
 
 const ENVELOPE_CONTRACT_ID = 'lumio.gameplay-envelope.v1';
-const N04_DECLARATIONS_SHA256 = 'fbe1d5e68533dff6f36605d42727bf2cf29382f72c3b73c7747355471c296c9c';
+const N04_DECLARATIONS_SHA256 = '851ad19af23c9c300190e2a2c19ff25a86ea62c0fd85accc0fcfdf682d94c7d6';
+const RUNTIME_DECLARATIONS = [
+  { attributeId: 'ChatComponent.lastMessageText', persistence: 'persistent', replication: 'not-replicated', valueType: 'utf8-string', visibility: 'server-only' },
+  { attributeId: 'ChatComponent.lastMessageTick', persistence: 'persistent', replication: 'not-replicated', valueType: 'u64', visibility: 'server-only' },
+  { attributeId: 'IdentityComponent.accountId', persistence: 'persistent', replication: 'not-replicated', valueType: 'utf8-string', visibility: 'server-only' },
+  { attributeId: 'IdentityComponent.friends', persistence: 'persistent', replication: 'replicated', valueType: 'list', visibility: 'room-public' },
+  { attributeId: 'IdentityComponent.name', persistence: 'persistent', replication: 'replicated', valueType: 'utf8-string', visibility: 'room-public' },
+  { attributeId: 'IdentityComponent.realName', persistence: 'persistent', replication: 'replicated', valueType: 'utf8-string', visibility: 'claim-scoped' },
+];
 
 function serializeAttributeDeclarations(declarations) {
   return `${JSON.stringify(declarations, null, 2)}\n`;
@@ -1050,9 +1089,13 @@ function checkGameplayEnvelopeContract(contract, fileName, problems) {
     if (JSON.stringify(Object.keys(contract.messages)) !== JSON.stringify(expectedMessages)) problem('messages must be exactly Welcome, WorldChange, InputCommand, ConnectionSuperseded, Error');
     for (const removed of ['FullSnapshot', 'Delta']) if (contract.messages[removed]) problem(`messages.${removed} is removed by C-1`);
     for (const removed of ['entity.identity', 'chat.event', 'chat.component']) if (contract.mappings?.[removed]) problem(`mappings.${removed} is removed by C-1`);
+    if (contract.transport?.maxFrameBytes !== 65536) problem('transport.maxFrameBytes must remain 65536');
+    if (contract.limits?.maxFrameBytes !== 65536) problem('limits.maxFrameBytes must remain 65536');
     if (contract.limits?.createsPerPack !== 0) problem('limits.createsPerPack must be 0 (unlimited)');
+    if (!contract.mappings?.['server.rpc'] || contract.mappings['server.rpc'].kind !== 'command') problem('mappings.server.rpc must be a registered command mapping');
     const world = contract.messages.WorldChange?.required ?? {};
-    for (const key of ['tick', 'creates', 'fields', 'destroys', 'rpcs']) if (!world[key]) problem(`WorldChange.required.${key} missing`);
+    for (const key of ['tick', 'appliedInputSequence', 'creates', 'fields', 'destroys', 'rpcs']) if (!world[key]) problem(`WorldChange.required.${key} missing`);
+    if (contract.messages.InputCommand?.required?.sequence !== 'u64') problem('InputCommand.sequence must be required u64');
     const create = contract.sharedTypes?.CreateRecord?.required ?? {};
     const change = contract.sharedTypes?.FieldChange?.required ?? {};
     const destroy = contract.sharedTypes?.DestroyRecord?.required ?? {};
@@ -1060,6 +1103,11 @@ function checkGameplayEnvelopeContract(contract, fileName, problems) {
     for (const [label, spec] of [['CreateRecord', create], ['FieldChange', change], ['DestroyRecord', destroy]]) if (spec.netEntityId !== 'hex128') problem(`${label}.netEntityId must be hex128`);
     for (const key of ['target', 'sender']) if (rpc[key] !== 'hex128') problem(`ClientRpcRecord.${key} must be hex128`);
     if (rpc.roomSequence !== 'u64') problem('ClientRpcRecord.roomSequence must be u64');
+    if (destroy.reason !== 'enum:destroyReason') problem('DestroyRecord.reason must be required enum:destroyReason');
+    if (rpc.args !== 'array:hex') problem('ClientRpcRecord.args must be array:hex');
+    if (rpc.scope !== 'enum:rpcScope') problem('ClientRpcRecord.scope must be required enum:rpcScope');
+    if (JSON.stringify(contract.enums?.destroyReason) !== JSON.stringify(['left_aoi', 'terminated'])) problem('destroyReason enum must be left_aoi, terminated');
+    if (JSON.stringify(contract.enums?.rpcScope) !== JSON.stringify(['room', 'aoi', 'owner', 'claim'])) problem('rpcScope enum must be room, aoi, owner, claim');
     if (contract.messages.ConnectionSuperseded?.required?.netEntityId !== 'hex128') problem('ConnectionSuperseded.netEntityId must be hex128');
     const input = contract.messages.InputCommand?.required ?? {};
     if (input.commands !== 'array:CommandBlock') problem('InputCommand.commands must carry CommandBlock payloads');
@@ -1069,9 +1117,12 @@ function checkGameplayEnvelopeContract(contract, fileName, problems) {
       if (digest !== example.payloadSha256) problem(`hash.examples ${example.mappingId} does not recompute`);
     }
     const names = new Set((contract.testCases ?? []).map((item) => item.name));
-    for (const required of ['welcome/128-bit-self', 'world-change/creation-field-rpc', 'world-change/destroy', 'world-change/field-sync', 'world-change/field-correction', 'world-change/owner-visible-to-bound-observer', 'input/chat']) if (!names.has(required)) problem(`testCases missing ${required}`);
+    for (const required of ['welcome/128-bit-self', 'world-change/creation-field-rpc', 'world-change/applied-input-sequence', 'world-change/rejected-input-advances-sequence', 'world-change/destroy-left-aoi', 'world-change/destroy-terminated', 'world-change/destroy', 'world-change/field-sync', 'world-change/field-correction', 'world-change/owner-visible-to-bound-observer', 'world-change/rpc-args-scope', 'input/sequence-1', 'input/chat']) if (!names.has(required)) problem(`testCases missing ${required}`);
     const invalidNames = new Set((contract.invalidCases ?? []).map((item) => item.name));
-    for (const required of ['sequence/world-change-before-welcome', 'world-change/owner-leaked-to-non-owner']) if (!invalidNames.has(required)) problem(`invalidCases missing ${required}`);
+    for (const required of ['sequence/world-change-before-welcome', 'world-change/owner-leaked-to-non-owner', 'input/missing-sequence', 'sequence/input-gap', 'sequence/input-regressed', 'world-change/missing-applied-input-sequence', 'world-change/destroy-missing-reason', 'world-change/destroy-legacy-shape', 'world-change/rpc-args-legacy-hex', 'world-change/rpc-scope-missing', 'world-change/rpc-scope-invalid']) if (!invalidNames.has(required)) problem(`invalidCases missing ${required}`);
+    for (const [mappingId, mapping] of Object.entries(contract.mappings ?? {})) {
+      if (mapping.dimensions?.sha256 !== N04_DECLARATIONS_SHA256) problem(`mappings.${mappingId}.dimensions.sha256 must match generated Runtime declarations ${N04_DECLARATIONS_SHA256}`);
+    }
     return;
   }
 }
@@ -1174,6 +1225,11 @@ function validateContract(contract, fileName, abiDefinition) {
 
   if (contract.testCases) {
     for (const testCase of contract.testCases) {
+      if (Array.isArray(testCase.messages)) {
+        const rejection = runCase(`testCases.${testCase.name}`, () => admitSequence(contract, testCase.messages));
+        if (rejection) problems.push(`${fileName} testCases.${testCase.name}: expected valid, rejected [${rejection.code}] ${rejection.message}`);
+        continue;
+      }
       const message = envelopePayload(testCase);
       if (!message) {
         runCase(`testCases.${testCase.name} (declaration)`, () => {
@@ -1190,6 +1246,14 @@ function validateContract(contract, fileName, abiDefinition) {
   }
   if (contract.invalidCases) {
     for (const invalidCase of contract.invalidCases) {
+      if (Array.isArray(invalidCase.messages)) {
+        const rejection = runCase(`invalidCases.${invalidCase.name}`, () => admitSequence(contract, invalidCase.messages));
+        if (!rejection) problems.push(`${fileName} invalidCases.${invalidCase.name}: expected rejection, was accepted`);
+        else if (rejection.code !== invalidCase.expectedRejection) {
+          problems.push(`${fileName} invalidCases.${invalidCase.name}: rejected with [${rejection.code}] but expected [${invalidCase.expectedRejection}] (${rejection.message})`);
+        }
+        continue;
+      }
       if (invalidCase.validatorCheck === false) {
         runCase(`invalidCases.${invalidCase.name} (declaration)`, () => {
           if (!invalidCase.payload && !invalidCase.given && !invalidCase.when) {
@@ -1284,7 +1348,7 @@ if (isDirectRun && !process.env.NODE_TEST_CONTEXT) {
 test('R5-01 C-1 exposes exactly the five World Manager messages', async () => {
   const contract = await loadEnvelopeContract();
   assert.deepEqual(Object.keys(contract.messages), ['Welcome', 'WorldChange', 'InputCommand', 'ConnectionSuperseded', 'Error']);
-  assert.deepEqual(Object.keys(contract.mappings), ['chat.input', 'field.write']);
+  assert.deepEqual(Object.keys(contract.mappings), ['chat.input', 'field.write', 'server.rpc']);
   assert.equal(contract.limits.createsPerPack, 0);
   assert.deepEqual(validateContract(contract, 'gameplay-command-envelope-v1.json').problems, []);
 });
@@ -1294,6 +1358,40 @@ test('R5-01 C-1 accepts Welcome and WorldChange with 128-bit identifiers', async
   for (const item of contract.testCases) assert.doesNotThrow(() => admitMessage(contract, item.message));
   const bad = contract.invalidCases.find((item) => item.name === 'non-128-bit-entity-id');
   assert.throws(() => admitMessage(contract, bad.payload), (error) => error instanceof Rejection && error.code === 'bad_envelope');
+});
+
+test('R5-01 C-1 requires contiguous per-connection input sequences', async () => {
+  const contract = await loadEnvelopeContract();
+  const first = contract.testCases.find((item) => item.name === 'input/sequence-1');
+  assert.ok(first, 'missing positive input sequence fixture');
+  assert.doesNotThrow(() => admitMessage(contract, first.message));
+  for (const name of ['input/missing-sequence', 'sequence/input-gap', 'sequence/input-regressed']) {
+    const invalid = contract.invalidCases.find((item) => item.name === name);
+    assert.ok(invalid, `missing invalid sequence fixture ${name}`);
+    if (Array.isArray(invalid.messages)) {
+      assert.throws(() => admitSequence(contract, invalid.messages), (error) => error instanceof Rejection && error.code === invalid.expectedRejection);
+    } else {
+      assert.throws(() => admitMessage(contract, invalid.payload), (error) => error instanceof Rejection && error.code === invalid.expectedRejection);
+    }
+  }
+});
+
+test('R5-01 C-1 requires appliedInputSequence, destroy reasons, and scoped RPC argument arrays', async () => {
+  const contract = await loadEnvelopeContract();
+  for (const name of ['world-change/applied-input-sequence', 'world-change/rejected-input-advances-sequence', 'world-change/destroy-left-aoi', 'world-change/destroy-terminated', 'world-change/rpc-args-scope']) {
+    const valid = contract.testCases.find((item) => item.name === name);
+    assert.ok(valid, `missing positive fixture ${name}`);
+    assert.doesNotThrow(() => admitMessage(contract, valid.message));
+  }
+  for (const name of ['world-change/missing-applied-input-sequence', 'world-change/destroy-missing-reason', 'world-change/destroy-legacy-shape', 'world-change/rpc-args-legacy-hex', 'world-change/rpc-scope-missing', 'world-change/rpc-scope-invalid']) {
+    const invalid = contract.invalidCases.find((item) => item.name === name);
+    assert.ok(invalid, `missing invalid fixture ${name}`);
+    assert.throws(() => admitMessage(contract, invalid.payload), (error) => error instanceof Rejection && error.code === invalid.expectedRejection);
+  }
+  assert.ok(contract.mappings?.['server.rpc'], 'server.rpc mapping must be registered');
+  const rejected = contract.testCases.find((item) => item.name === 'world-change/rejected-input-advances-sequence');
+  assert.equal(rejected.given.inputOutcome, 'rejected');
+  assert.equal(rejected.message.appliedInputSequence, rejected.given.sequence);
 });
 
 test('R5-01 C-1 recomputes command payload hashes and rejects mismatches', async () => {
@@ -1331,9 +1429,20 @@ test('R5-01 C-2 admit is asynchronous and declaration projections are derived', 
   assert.equal(Object.prototype.hasOwnProperty.call(contract.binding.operations, 'listBindings'), false);
   assert.equal(contract.attributeDeclarations.table.some((row) => row.attributeId.startsWith('EntityIdentity.')), false);
   assert.ok(contract.derived.entityType.source.includes('TypeOf'));
-  assert.match(contract.derived.tombstoned, /next-issued-counter/);
+  assert.match(contract.derived.tombstoned, /reserved-through/);
+  assert.match(contract.derived.tombstoned, /counter <=/);
+  assert.doesNotMatch(contract.derived.tombstoned, /next-issued-counter/);
   assert.match(contract.claim.credential, /claimBy/);
   assert.deepEqual(validateContract(contract, 'entity-binding-and-query-v1.json').problems, []);
+});
+
+test('C-2 tombstone watermark rejects legacy next-issued-counter derivation', async () => {
+  const contract = await loadBindingContract();
+  const legacy = JSON.parse(JSON.stringify(contract));
+  legacy.derived.tombstoned = 'counter < next-issued-counter && netEntityId not in live entities';
+  const { problems } = validateContract(legacy, 'entity-binding-and-query-v1.json');
+  assert.ok(problems.some((problem) => problem.includes('reserved-through watermark')));
+  assert.ok(problems.some((problem) => problem.includes('legacy next-issued-counter')));
 });
 
 test('R5-01 C-2 declares the closed in-process Runtime Manager controls table', async () => {
@@ -1706,25 +1815,61 @@ test('C-2 attributeDeclarations is generated-from-field-annotations and matches 
   assert.equal(Object.prototype.hasOwnProperty.call(decls, 'example'), false);
   assert.ok(Array.isArray(decls.table), 'embedded generated table missing');
   const digest = hashDeclarationTable(decls.table);
+  assert.equal(decls.table.length, 6);
+  assert.deepEqual(decls.table.map((row) => row.attributeId), [
+    'ChatComponent.lastMessageText',
+    'ChatComponent.lastMessageTick',
+    'IdentityComponent.accountId',
+    'IdentityComponent.friends',
+    'IdentityComponent.name',
+    'IdentityComponent.realName',
+  ]);
   assert.equal(decls.sha256, N04_ATTRIBUTE_DECLARATIONS_SHA256);
   assert.equal(digest, N04_ATTRIBUTE_DECLARATIONS_SHA256);
   const ids = decls.table.map((row) => row.attributeId);
-  assert.equal(ids.includes('EntityIdentity.accountId'), false);
+  assert.ok(ids.includes('IdentityComponent.accountId'));
   assert.ok(ids.includes('ChatComponent.lastMessageText'));
+  assert.ok(ids.includes('IdentityComponent.friends'));
+  assert.ok(ids.includes('IdentityComponent.name'));
+  assert.ok(ids.includes('IdentityComponent.realName'));
   assert.equal(ids.some((id) => id.startsWith('EntityIdentity.')), false);
   const { problems } = validateContract(contract, 'entity-binding-and-query-v1.json');
   assert.deepEqual(problems, []);
 });
 
-test('C-2 readRules return undeclared_attribute for EntityIdentity.accountId', async () => {
+test('C-2 readRules expose the generated IdentityComponent fields', async () => {
   const contract = await loadBindingContract();
   const rules = contract.attributeDeclarations.readRules ?? [];
-  assert.ok(rules.some((rule) => rule.includes('EntityIdentity.accountId') && rule.includes('undeclared_attribute')));
-  const account = (contract.invalidCases ?? []).find((item) => item.payload?.attributeId === 'EntityIdentity.accountId');
-  assert.ok(account, 'missing invalidCase that queries EntityIdentity.accountId');
-  assert.equal(account.expectedRejection, 'undeclared_attribute');
+  for (const field of ['IdentityComponent.accountId', 'IdentityComponent.friends', 'IdentityComponent.name', 'IdentityComponent.realName']) {
+    assert.ok(rules.some((rule) => rule.includes(field)), `readRules missing ${field}`);
+  }
+  assert.ok(rules.some((rule) => rule.includes('IdentityComponent.accountId') && rule.includes('server-only')));
+  const visibilityById = new Map(contract.attributeDeclarations.table.map((row) => [row.attributeId, row.visibility]));
+  assert.equal(visibilityById.get('IdentityComponent.friends'), 'room-public');
+  assert.equal(visibilityById.get('IdentityComponent.name'), 'room-public');
+  assert.equal(visibilityById.get('IdentityComponent.realName'), 'claim-scoped');
+  const visibilityRule = rules.find((rule) => rule.includes('IdentityComponent.friends'));
+  assert.match(visibilityRule, /friends.*name.*room-public/);
+  assert.match(visibilityRule, /realName.*claim-scoped/);
+  const account = (contract.invalidCases ?? []).find((item) => item.payload?.attributeId === 'IdentityComponent.accountId');
+  assert.equal(account, undefined, 'generated IdentityComponent.accountId must not be marked undeclared');
   const { problems } = validateContract(contract, 'entity-binding-and-query-v1.json');
   assert.deepEqual(problems, []);
+});
+
+test('C-2 declaration table and digest cannot drift from the six generated Runtime rows', async () => {
+  const contract = await loadBindingContract();
+  const expected = [
+    { attributeId: 'ChatComponent.lastMessageText', persistence: 'persistent', replication: 'not-replicated', valueType: 'utf8-string', visibility: 'server-only' },
+    { attributeId: 'ChatComponent.lastMessageTick', persistence: 'persistent', replication: 'not-replicated', valueType: 'u64', visibility: 'server-only' },
+    { attributeId: 'IdentityComponent.accountId', persistence: 'persistent', replication: 'not-replicated', valueType: 'utf8-string', visibility: 'server-only' },
+    { attributeId: 'IdentityComponent.friends', persistence: 'persistent', replication: 'replicated', valueType: 'list', visibility: 'room-public' },
+    { attributeId: 'IdentityComponent.name', persistence: 'persistent', replication: 'replicated', valueType: 'utf8-string', visibility: 'room-public' },
+    { attributeId: 'IdentityComponent.realName', persistence: 'persistent', replication: 'replicated', valueType: 'utf8-string', visibility: 'claim-scoped' },
+  ];
+  assert.deepEqual(contract.attributeDeclarations.table, expected);
+  assert.equal(hashDeclarationTable(contract.attributeDeclarations.table), '851ad19af23c9c300190e2a2c19ff25a86ea62c0fd85accc0fcfdf682d94c7d6');
+  assert.equal(contract.attributeDeclarations.sha256, '851ad19af23c9c300190e2a2c19ff25a86ea62c0fd85accc0fcfdf682d94c7d6');
 });
 
 test('validator accepts a generated-declaration binding fixture and rejects a handwritten example', () => {

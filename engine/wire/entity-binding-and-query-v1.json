@@ -152,7 +152,7 @@
     ]
   },
   "identityModel": {
-    "accountId": "持久业务身份，不透明字符串；由账号服 login-or-register 分配，登录/登出不改变。可作为身份属性值随实体携带，但不声明为可查属性（见 readRules）；只在登录回应中给出，不自动对其他客户端公开。",
+    "accountId": "持久业务身份，不透明字符串；由账号服 login-or-register 分配，登录/登出不改变。是已生成的 IdentityComponent.accountId 声明，属性为 persistent / not-replicated / server-only；仅服务端权威查询可读，不自动对其他客户端公开。",
     "roomId": "宿主路由键：标识连接被路由到的 Game 实例（一个进程一个 World Manager 一个 GameWorld）。Runtime 接口按实例隐含，不解析该值；cross_room 结局由宿主路由层判定。契约字段名保留。绑定、解析与查询一律在单一实例范围内成立。",
     "netEntityId": "运行时网络身份，128 位 = 实例 ID（高 64）+ 计数器（低 64），32-hex 小写编码不变；世界在提交相发号（Runtime 身份表发号并入档），跨进程唯一、跨重启不复用、销毁后永不复用。由 Runtime 身份表发号；宿主准入时调用 Runtime 取号；宿主不得自铸。它是客户端与服务端寻址实体的唯一游戏层引用：不是数组下标、不是数据库主键 API、也不是客户端或宿主自造的临时标识。同一账号的运行时实体 A 过期后重登生成 B 时，NetEntityId 变化而 AccountId 不变。",
     "entityType": "实体类别枚举 player | bot。由服务端按已认证登录名规则分类创建（PlayerEntity / BotEntity），客户端不得提交任意 EntityType 字段。",
@@ -259,7 +259,7 @@
   "attributeDeclarations": {
     "source": "generated-from-field-annotations",
     "notes": "玩法只用类型化读（Get<T>() / Get<T>(id) / Each<T>()）；本查询面是生成的薄适配层（字符串 AttributeId -> 同一世界同一 Sync 字段），无自有存储。Runtime 生成物逐字节嵌入本契约。",
-    "sha256": "fbe1d5e68533dff6f36605d42727bf2cf29382f72c3b73c7747355471c296c9c",
+    "sha256": "851ad19af23c9c300190e2a2c19ff25a86ea62c0fd85accc0fcfdf682d94c7d6",
     "table": [
       {
         "attributeId": "ChatComponent.lastMessageText",
@@ -274,6 +274,34 @@
         "replication": "not-replicated",
         "valueType": "u64",
         "visibility": "server-only"
+      },
+      {
+        "attributeId": "IdentityComponent.accountId",
+        "persistence": "persistent",
+        "replication": "not-replicated",
+        "valueType": "utf8-string",
+        "visibility": "server-only"
+      },
+      {
+        "attributeId": "IdentityComponent.friends",
+        "persistence": "persistent",
+        "replication": "replicated",
+        "valueType": "list",
+        "visibility": "room-public"
+      },
+      {
+        "attributeId": "IdentityComponent.name",
+        "persistence": "persistent",
+        "replication": "replicated",
+        "valueType": "utf8-string",
+        "visibility": "room-public"
+      },
+      {
+        "attributeId": "IdentityComponent.realName",
+        "persistence": "persistent",
+        "replication": "replicated",
+        "valueType": "utf8-string",
+        "visibility": "claim-scoped"
       }
     ],
     "structure": {
@@ -297,14 +325,15 @@
       "client-replica 作用域：仅当 replication=replicated 且 visibility 允许（room-public；aoi-scoped 需在 AOI 内；claim-scoped 需持 claim）且属性已实际复制进该 ReplicaWorld 时可读。",
       "visibility=server-only 或 replication=not-replicated 的属性对 client-replica 作用域以 invisible 结局返回；实体本身不可见时同样 invisible。",
       "实体可见但属性可见性类别与调用方不符（如 claim-scoped 未持 claim）以 unauthorized 结局返回。",
-      "EntityIdentity.accountId 不声明为可查属性；查询返回 undeclared_attribute，不得映射为 unauthorized。该字段未打字段标注，不进入生成声明表；只在登录回应中给出。",
+      "IdentityComponent.accountId 已在生成声明表中，属性为 server-only / not-replicated；server-authoritative 可读，client-replica 以 invisible 结局返回，不得按 undeclared_attribute 处理。",
+      "IdentityComponent.friends 和 IdentityComponent.name 均为 room-public；IdentityComponent.realName 为 claim-scoped；三者均按生成声明表的 visibility 投影规则发送。",
       "派生项：entityType 不作为声明表行，由 World.TypeOf(netEntityId) 回答 player | bot；客户端不得提交或覆盖该值。",
-      "派生项：tombstoned 当计数器小于下一个已发号且该 NetEntityId 不在活体集合时成立；不存墓碑集合，永不解析为替代实体。"
+      "派生项：tombstoned 当该 NetEntityId 实例的计数器不大于 reserved-through watermark 且该 NetEntityId 不在活体集合时成立；不存墓碑集合，永不解析为替代实体。"
     ]
   },
   "derived": {
     "entityType": { "source": "World.TypeOf(netEntityId)", "values": ["player", "bot"] },
-    "tombstoned": "counter < next-issued-counter && netEntityId not in live entities"
+    "tombstoned": "counter <= reserved-through watermark for this NetEntityId instance && netEntityId not in live entities"
   },
   "claim": {
     "credential": "目标实体上 claimBy 指名的名单字段（例如 Friends）中的成员值",
@@ -457,7 +486,7 @@
     },
     {
       "name": "outcome_non_existent",
-      "given": "netEntityId=N9 在 room-01 从未存在（或墓碑遗忘后）",
+      "given": "netEntityId=N9 在 room-01 的 counter 高于该实例的 reserved-through watermark（或墓碑遗忘后）",
       "when": "任一作用域解析/查询 N9",
       "expect": "non_existent",
       "then": "显式 non_existent；不返回替代实体。"
@@ -485,7 +514,7 @@
     },
     {
       "name": "outcome_tombstoned",
-      "given": "N1 已销毁，墓碑在保留期内",
+      "given": "N1 已销毁，counter 不大于该实例的 reserved-through watermark，且墓碑仍在保留期内",
       "when": "任一作用域解析/查询 N1",
       "expect": "tombstoned",
       "then": "显式 tombstoned；永不复活、永不改指；重登产生的后继实体是新的 NetEntityId。"
