@@ -293,12 +293,18 @@ for (const forbidden of ['docs', '.sdd', '.workflow-drafts']) {
 // 嵌套的 docs/ 同样在禁名单里——2026-09 收敛前的重复副本恰恰长在 engine/native/docs/。
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'target', 'bin', 'obj', 'dist', '.venv', '__pycache__'])
 const FORBIDDEN_DOC_DIRS = new Set(['docs', '.sdd', '.workflow-drafts'])
+// 宿主托管的 worktree 按构造就是本仓的完整检出:它们各自带一份 .spec/ 与 docs/,
+// 扫进来等于把仓库自己报成「第二套框架」与「并行文档根」。按路径精确排除,
+// 不整体跳过 .claude/(那里还有别的东西),也不笼统跳过 gitignore 目录
+// ——.workflow-drafts/ 同样被 gitignore,而它正是本项检查要抓的。
+const SKIP_PATHS = new Set([join(ROOT, '.claude', 'worktrees')])
 function findForbiddenDirs(dir, depth = 0, out = []) {
   if (depth > 6) return out
   let entries
   try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return out }
   for (const e of entries) {
     if (!e.isDirectory() || SKIP_DIRS.has(e.name)) continue
+    if (SKIP_PATHS.has(join(dir, e.name))) continue
     const child = join(dir, e.name)
     try { if (lstatSync(child).isSymbolicLink()) continue } catch { continue }
     if (e.name === '.spec' && child !== SPEC) { out.push({ path: child, kind: 'spec' }); continue }
