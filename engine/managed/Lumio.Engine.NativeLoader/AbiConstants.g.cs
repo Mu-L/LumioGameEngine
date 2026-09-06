@@ -8,7 +8,7 @@ internal static class AbiConstants
 {
     public const uint AbiVersion = 1;
     public const string EntrySymbol = "lumio_engine_get_api_v1";
-    public const string DefinitionSha256 = "cd7ec9d974c4af2ddf7e4fa332da03dd1fbbeb5fcea2bfa24436921e783d0aa8";
+    public const string DefinitionSha256 = "fd76885af15bb7e3bd3b957ae3ea3f267a56965086d1b2f360861f3034038fec";
     public const uint VoxelMaxCellsPerReadRequest = 262144;
     public const uint VoxelMaxEntriesPerWriteBatch = 65536;
     public const uint VoxelCellOffsetYStride = 256;
@@ -169,8 +169,8 @@ internal struct VoxelRaycastResult
 [StructLayout(LayoutKind.Sequential)]
 internal struct VoxelSweepRequest
 {
-    public nint Shape;
-    public nint Pose;
+    public VoxelWorldPoint Center;
+    public VoxelWorldPoint HalfExtents;
     public VoxelWorldPoint Displacement;
     public uint MaterialMask;
 }
@@ -193,11 +193,9 @@ internal struct VoxelSweepResult
 [StructLayout(LayoutKind.Sequential)]
 internal struct VoxelOverlapRequest
 {
-    public nint Shape;
-    public nint Pose;
+    public VoxelWorldPoint Center;
+    public VoxelWorldPoint HalfExtents;
     public uint MaterialMask;
-    [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
-    public byte[] Reserved;
 }
 
 [StructLayout(LayoutKind.Sequential)]

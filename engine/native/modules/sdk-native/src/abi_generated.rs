@@ -3,7 +3,7 @@
 pub const ABI_VERSION: u32 = 1;
 pub const ENTRY_SYMBOL: &str = "lumio_engine_get_api_v1";
 pub const DEFINITION_SHA256: &str =
-    "cd7ec9d974c4af2ddf7e4fa332da03dd1fbbeb5fcea2bfa24436921e783d0aa8";
+    "fd76885af15bb7e3bd3b957ae3ea3f267a56965086d1b2f360861f3034038fec";
 pub const VOXEL_MAX_CELLS_PER_READ_REQUEST: u32 = 262144;
 pub const VOXEL_MAX_ENTRIES_PER_WRITE_BATCH: u32 = 65536;
 pub const VOXEL_CELL_OFFSET_Y_STRIDE: u32 = 256;
@@ -212,8 +212,8 @@ pub struct VoxelRaycastResult {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct VoxelSweepRequest {
-    pub shape: *mut core::ffi::c_void,
-    pub pose: *mut core::ffi::c_void,
+    pub center: VoxelWorldPoint,
+    pub half_extents: VoxelWorldPoint,
     pub displacement: VoxelWorldPoint,
     pub material_mask: u32,
 }
@@ -235,10 +235,9 @@ pub struct VoxelSweepResult {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct VoxelOverlapRequest {
-    pub shape: *mut core::ffi::c_void,
-    pub pose: *mut core::ffi::c_void,
+    pub center: VoxelWorldPoint,
+    pub half_extents: VoxelWorldPoint,
     pub material_mask: u32,
-    pub _reserved: [u8; 4],
 }
 
 #[repr(C)]
