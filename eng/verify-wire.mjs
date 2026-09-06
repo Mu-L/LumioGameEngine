@@ -1139,6 +1139,7 @@ const VOXEL_RULE_ERROR_WIRING = [
   ['residency.pin-budget-is-declared', 'residency_pin_exceeds_budget'],
   ['residency.pin-ready-before-gameplay', 'pin_region_not_ready'],
   ['catalog.row-must-be-complete', 'block_catalog_row_incomplete'],
+  ['query.degenerate-shape-is-rejected', 'degenerate_query_shape'],
 ];
 const VOXEL_FULL_ENCODINGS = ['Uniform', 'Palette', 'Raw'];
 
@@ -1198,13 +1199,35 @@ function checkVoxelRuleErrorWiring(contract, problem) {
   if (!pinBudgetCase || !(pinBudgetCase.requestedSections > pinBudgetCase.residentSectionBudget)) {
     problem('residency_pin_exceeds_budget needs an invalidCase with a declared residentSectionBudget and a strictly larger requestedSections');
   }
+
+  // ADR-062 rev. 2026-09-06 (R-00494): a degenerate query box is forbidden from collapsing into
+  // BOTH a silent Miss and a silent point (Hit); the same request reaches one or the other purely
+  // from where its center falls. Blocking one half leaves the other reachable, so both halves must
+  // carry their own invalidCase with real numbers.
+  const degenerateCases = casesByCode.get('degenerate_query_shape') ?? [];
+  const numericTriple = (value) => Array.isArray(value) && value.length === 3
+    && value.every((component) => typeof component === 'number');
+  const isDegenerateExtent = (extents) => numericTriple(extents)
+    && extents.some((component) => !Number.isFinite(component) || component <= 0);
+  for (const outcome of ['Miss', 'Hit']) {
+    const demonstrated = degenerateCases.some((item) => item.observedResolution === outcome
+      && numericTriple(item.center) && isDegenerateExtent(item.halfExtents));
+    if (!demonstrated) {
+      problem(`degenerate_query_shape needs an invalidCase carrying concrete center and degenerate halfExtents numbers whose unchecked implementation is observed as ${outcome}; blocking only one of the two forbidden outcomes leaves the other reachable`);
+    }
+  }
 }
 
 // ADR-062 rev. 2026-09-06 (R-00486): physicsQuery must declare its shape, its material-class
 // filter mask, and where the material-class table enters Native — and native-abi.json must carry
 // the same three declarations. Without this branch the contract can say "AABB inlined by value"
 // while the ABI still passes an opaque `shape` pointer whose layout nobody declared.
-const VOXEL_SHAPE_REQUIRED_CLAUSES = ['poseIsCenter', 'noRotation', 'inlineByValue', 'shapeSetIsClosed', 'degenerateShape'];
+const VOXEL_SHAPE_REQUIRED_CLAUSES = ['poseIsCenter', 'noRotation', 'inlineByValue', 'shapeSetIsClosed', 'degenerateShape',
+  'degenerateShapeIsRejectedNotUndefined', 'degenerateShapeCheckedBeforeTraversal', 'degenerateShapeAppliesTo'];
+const VOXEL_SWEEP_FRACTION_CLAUSES = ['hit', 'miss', 'unresolved', 'whyNotZeroDefault'];
+const VOXEL_DATA_SOURCE_CLAUSES = ['statement', 'neverRequestsLoad', 'whyPublishedCut', 'differsFromBlockRead',
+  'unresolvedMeansNotInTheCut', 'sameCutWithinOneQuery'];
+const VOXEL_NON_VOXEL_BODY_CLAUSES = ['v1', 'whyNotInV1', 'callerComposes', 'reopeningCondition'];
 const VOXEL_MASK_REQUIRED_CLAUSES = ['bitOrder', 'combining', 'zeroMatchesNothing', 'reservedBitsMustBeZero', 'appendOnly', 'notAnIdSegment'];
 const VOXEL_MATERIAL_TABLE_REQUIRED_CLAUSES = ['statement', 'source', 'whyNotARootSlot', 'whyNotAQueryParameter', 'resolvedBeforeQueryable', 'noBuiltInFallback', 'immutableWithinTick'];
 const VOXEL_PHYSICS_REQUEST_FIELDS = {
@@ -1251,6 +1274,76 @@ function checkVoxelPhysicsDeclarations(contract, abiDefinition, problem) {
     }
     for (const clause of VOXEL_SHAPE_REQUIRED_CLAUSES) {
       if (!nonEmpty(shape[clause])) problem(`physicsQuery.shape.${clause} must be declared`);
+    }
+    if (!String(shape.degenerateShape ?? '').includes('degenerate_query_shape')) {
+      problem('physicsQuery.shape.degenerateShape must name the degenerate_query_shape rejection; "caller guarantees" alone leaves the callee with no code to reject with');
+    }
+    for (const [half, pattern] of [['silent Miss', /Miss/], ['silent point', /一个点|as a point/]]) {
+      if (!pattern.test(String(shape.degenerateShape ?? ''))) {
+        problem(`physicsQuery.shape.degenerateShape must forbid the ${half} outcome; both halves are reachable from the same request`);
+      }
+    }
+    if (!/Unresolved/.test(String(shape.degenerateShapeCheckedBeforeTraversal ?? ''))) {
+      problem('physicsQuery.shape.degenerateShapeCheckedBeforeTraversal must rule out Unresolved as well; a degenerate box is not a fourth resolution');
+    }
+  }
+
+  // KG-2: sweep must declare travel_fraction for every resolution. The zero-initialized 0.0 means
+  // "cannot move at all", so Miss has to say 1.0 out loud instead of leaning on the default.
+  const sweepFraction = contract.physicsQuery?.queries?.sweep?.travelFraction;
+  if (!sweepFraction || typeof sweepFraction !== 'object' || Array.isArray(sweepFraction)) {
+    problem('physicsQuery.queries.sweep.travelFraction must declare the travel fraction for Hit, Miss, and Unresolved');
+  } else {
+    for (const clause of VOXEL_SWEEP_FRACTION_CLAUSES) {
+      if (!nonEmpty(sweepFraction[clause])) problem(`physicsQuery.queries.sweep.travelFraction.${clause} must be declared`);
+    }
+    const miss = String(sweepFraction.miss ?? '');
+    if (!miss.includes('1.0') || !miss.includes('0.0')) {
+      problem('physicsQuery.queries.sweep.travelFraction.miss must name the exact value 1.0 and rule out the zero-initialized 0.0');
+    }
+    if (!/不给|不得读|must not read|no travel fraction/.test(String(sweepFraction.unresolved ?? ''))) {
+      problem('physicsQuery.queries.sweep.travelFraction.unresolved must state that Unresolved carries no travel fraction the caller may read');
+    }
+  }
+
+  // KG-3: physics reads the published cut only; block_read_* is a different data face and the two
+  // can disagree at the same coordinate in the same frame.
+  const dataSource = contract.physicsQuery?.dataSource;
+  if (!dataSource || typeof dataSource !== 'object' || Array.isArray(dataSource)) {
+    problem('physicsQuery.dataSource must declare which face the queries read from');
+  } else {
+    for (const clause of VOXEL_DATA_SOURCE_CLAUSES) {
+      if (!nonEmpty(dataSource[clause])) problem(`physicsQuery.dataSource.${clause} must be declared`);
+    }
+    if (!/Unresolved/.test(String(dataSource.neverRequestsLoad ?? ''))) {
+      problem('physicsQuery.dataSource.neverRequestsLoad must say that a Section outside the published cut is Unresolved rather than loaded on demand');
+    }
+    const differs = String(dataSource.differsFromBlockRead ?? '');
+    for (const token of ['block_read_cell', 'Ready', 'Unresolved']) {
+      if (!differs.includes(token)) {
+        problem(`physicsQuery.dataSource.differsFromBlockRead must name ${token}; the observable consequence is Ready on the read face and Unresolved on the query face at the same coordinate`);
+      }
+    }
+    if (!String(dataSource.unresolvedMeansNotInTheCut ?? '').includes('block_read_cell')) {
+      problem('physicsQuery.dataSource.unresolvedMeansNotInTheCut must forbid using the block_read_cell presence to second-guess a physics Unresolved');
+    }
+  }
+
+  // KG-6: v1 answers about voxels only, and the narrowing is anchored to the ABI having no target
+  // discriminator and no body-registration slot. Re-broadening the clause without moving the ABI
+  // (or the reverse) must not pass.
+  const bodies = contract.physicsQuery?.nonVoxelBodies;
+  if (!bodies || typeof bodies !== 'object' || Array.isArray(bodies)) {
+    problem('physicsQuery.nonVoxelBodies must be a declaration block that settles whether v1 supports non-voxel bodies');
+  } else {
+    for (const clause of VOXEL_NON_VOXEL_BODY_CLAUSES) {
+      if (!nonEmpty(bodies[clause])) problem(`physicsQuery.nonVoxelBodies.${clause} must be declared`);
+    }
+    if (!/不支持|not supported/.test(String(bodies.v1 ?? ''))) {
+      problem('physicsQuery.nonVoxelBodies.v1 must state that v1 does not support non-voxel bodies; supporting them needs a target discriminator in the three result structs');
+    }
+    if (!String(bodies.reopeningCondition ?? '').includes('ADR')) {
+      problem('physicsQuery.nonVoxelBodies.reopeningCondition must require an ADR before the surface is reopened');
     }
   }
   for (const [name, query] of Object.entries(contract.physicsQuery?.queries ?? {})) {
@@ -1309,8 +1402,13 @@ function checkVoxelPhysicsDeclarations(contract, abiDefinition, problem) {
     if (!String(table.noBuiltInFallback ?? '').includes('unknown_material_class')) {
       problem('physicsQuery.materialClassTable.noBuiltInFallback must name unknown_material_class');
     }
+    // KG-4: a world with no injected catalog rejects with collision_behavior_not_from_material_table.
+    // unknown_material_class is already bound to two other, separately reachable meanings.
+    if (!String(table.resolvedBeforeQueryable ?? '').includes('collision_behavior_not_from_material_table')) {
+      problem('physicsQuery.materialClassTable.resolvedBeforeQueryable must name collision_behavior_not_from_material_table as the rejection for a world with no injected catalog');
+    }
   }
-  for (const code of ['unknown_material_class']) {
+  for (const code of ['unknown_material_class', 'collision_behavior_not_from_material_table', 'degenerate_query_shape']) {
     if (!(contract.errorCodes ?? []).includes(code)) problem(`errorCodes must carry ${code} for the material-class filter`);
   }
 
@@ -1358,6 +1456,15 @@ function checkVoxelPhysicsDeclarations(contract, abiDefinition, problem) {
     if (recorded?.size !== computed.size || JSON.stringify(recorded?.offsets) !== JSON.stringify(computed.offsets)) {
       problem(`native-abi.json voxel.layout.types.${typeName} must be ${JSON.stringify({ size: computed.size, offsets: computed.offsets })}, got ${JSON.stringify(recorded)}`);
     }
+  }
+  for (const typeName of ['raycast_result', 'sweep_result', 'overlap_result']) {
+    const declared = abiVoxel.types?.[typeName]?.fields ?? [];
+    if (declared.some((field) => /target/i.test(String(field.name)))) {
+      problem(`native-abi.json voxel.types.${typeName} declares a target discriminator while physicsQuery.nonVoxelBodies scopes v1 to voxels only; reopening that surface needs an ADR, not a field`);
+    }
+  }
+  if ((abiDefinition.root?.fields ?? []).some((field) => /register_body|body_register/i.test(String(field.name)))) {
+    problem('native-abi.json root must not expose a non-voxel body registration slot while physicsQuery.nonVoxelBodies scopes v1 to voxels only');
   }
 }
 

@@ -720,6 +720,9 @@ fn status_for_error(error: &str) -> i32 {
         "base_revision_on_full_encoding" => {
             crate::abi_generated::VOXEL_ERROR_BASE_REVISION_ON_FULL_ENCODING
         }
+        "degenerate_query_shape" => {
+            crate::abi_generated::VOXEL_ERROR_DEGENERATE_QUERY_SHAPE
+        }
         _ => LumioStatus::InvalidArgument as i32,
     }
 }

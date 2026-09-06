@@ -8,7 +8,7 @@ internal static class AbiConstants
 {
     public const uint AbiVersion = 1;
     public const string EntrySymbol = "lumio_engine_get_api_v1";
-    public const string DefinitionSha256 = "fd76885af15bb7e3bd3b957ae3ea3f267a56965086d1b2f360861f3034038fec";
+    public const string DefinitionSha256 = "32f99c21329b064d18431e1d8ef1161f2e71c8fe5bf5eba9e933f99fdedb28de";
     public const uint VoxelMaxCellsPerReadRequest = 262144;
     public const uint VoxelMaxEntriesPerWriteBatch = 65536;
     public const uint VoxelCellOffsetYStride = 256;
@@ -291,6 +291,7 @@ internal static class VoxelErrorCodes
     public const int UnregisteredBlockType = 1051;
     public const int WriteBatchPartiallyApplied = 1052;
     public const int BaseRevisionOnFullEncoding = 1053;
+    public const int DegenerateQueryShape = 1054;
 }
 
 

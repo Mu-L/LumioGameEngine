@@ -175,6 +175,7 @@ public enum VoxelErrorCode
     UnregisteredBlockType = Native.VoxelErrorCodes.UnregisteredBlockType,
     WriteBatchPartiallyApplied = Native.VoxelErrorCodes.WriteBatchPartiallyApplied,
     BaseRevisionOnFullEncoding = Native.VoxelErrorCodes.BaseRevisionOnFullEncoding,
+    DegenerateQueryShape = Native.VoxelErrorCodes.DegenerateQueryShape,
 }
 
 public static class VoxelErrorCodeMap
@@ -235,6 +236,7 @@ public static class VoxelErrorCodeMap
         Native.VoxelErrorCodes.UnregisteredBlockType,
         Native.VoxelErrorCodes.WriteBatchPartiallyApplied,
         Native.VoxelErrorCodes.BaseRevisionOnFullEncoding,
+        Native.VoxelErrorCodes.DegenerateQueryShape,
     };
 
     public static bool TryMap(int status, out VoxelErrorCode code)

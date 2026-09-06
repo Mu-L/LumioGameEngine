@@ -167,7 +167,7 @@
       {
         "name": "sweep",
         "type": "fn(pointer, pointer, pointer) -> status",
-        "doc": "Run one voxel sweep using caller-owned SweepRequest and SweepResult. Resolution is explicit Hit, Miss, or Unresolved; the result carries collided, travel_fraction in 0..1, collision point, normal, hit cell, BlockId, and unresolved SectionKey when applicable."
+        "doc": "Run one voxel sweep using caller-owned SweepRequest and SweepResult. Resolution is explicit Hit, Miss, or Unresolved; the result carries collided, travel_fraction in 0..1 (exactly 1.0 on Miss, undefined and unreadable on Unresolved), collision point, normal, hit cell, BlockId, and unresolved SectionKey when applicable."
       },
       {
         "name": "overlap",
@@ -179,8 +179,8 @@
   "voxel": {
     "contractId": "lumio.voxel-world.v1",
     "source": "engine/wire/voxel-world-v1.json",
-    "sourceSha256": "523aec6e590d8c78f8a15fc4a67e98a80b19ea1ba5a9ced28fdf482d44e48fc9",
-    "sourceCounts": { "errors": 54, "rules": 60, "cases": 115 },
+    "sourceSha256": "23030c870cc87b800ab7fca2c0faa8bbc8eb9c6dedfce8987a898b77ccd169a1",
+    "sourceCounts": { "errors": 55, "rules": 61, "cases": 118 },
     "constants": {
       "blockId": {
         "type": "u32",
@@ -332,7 +332,8 @@
       "cell_read_missing_presence",
       "unregistered_block_type",
       "write_batch_partially_applied",
-      "base_revision_on_full_encoding"
+      "base_revision_on_full_encoding",
+      "degenerate_query_shape"
     ],
     "types": {
       "section_key": {
@@ -502,7 +503,7 @@
           { "name": "hit_point", "type": "world_point" },
           { "name": "hit_normal", "type": "world_point" }
         ],
-        "doc": "Resolution is explicit; Hit carries collided=1 and a 0..1 travel fraction, Miss carries collided=0, and Unresolved carries SectionKey."
+        "doc": "Resolution is explicit; Hit carries collided=1 and a 0..1 travel fraction, Miss carries collided=0 and travel_fraction exactly 1.0, and Unresolved carries SectionKey and no travel fraction."
       },
       "overlap_request": {
         "kind": "struct",
@@ -539,7 +540,11 @@
       "truncated": "Every batch read writes actual count and an explicit truncated flag; over-budget requests are rejected rather than truncated.",
       "fullEncodingBaseSectionRevision": "Uniform, Palette, and Raw must not carry baseSectionRevision; reject the whole payload as base_revision_on_full_encoding (contract rule payload.full-encoding-carries-no-base-revision). The ABI invents no status of its own.",
       "pinBudget": "The Section-count budget is supplied by the caller for each pin declaration and is the contract field residency.pinnedRegions.budget.residentSectionBudget; this ABI invents no fixed pin budget and never lowers the supplied one.",
-      "batchAtomicityVsSizeCap": "Batch atomicity and the entry cap are two distinct contract statuses and must not substitute for each other: a partially applied batch is write_batch_partially_applied (rule write.batch-is-all-or-nothing), an oversized batch is write_batch_too_large (rule write.batch-size-cap). Neither is remapped to a generic transaction error."
+      "batchAtomicityVsSizeCap": "Batch atomicity and the entry cap are two distinct contract statuses and must not substitute for each other: a partially applied batch is write_batch_partially_applied (rule write.batch-is-all-or-nothing), an oversized batch is write_batch_too_large (rule write.batch-size-cap). Neither is remapped to a generic transaction error.",
+      "degenerateQueryShape": "sweep and overlap must validate every half_extents component as finite and strictly greater than zero before any traversal, and reject a degenerate box with degenerate_query_shape (contract rule query.degenerate-shape-is-rejected). A degenerate box is not a fourth resolution: it must never be answered with Hit, Miss, or Unresolved, and no result field is written. raycast carries no shape and is not covered.",
+      "sweepTravelFraction": "Hit carries the 0..1 travel fraction. Miss must carry exactly 1.0 - nothing blocks the path, so the whole displacement is clear - and never the zero-initialized 0.0, which means the caller cannot move at all. Unresolved carries no travel fraction and the caller must not read the field. Contract: physicsQuery.queries.sweep.travelFraction.",
+      "publishedCutOnly": "Physics queries read only the already-published immutable cut and never request loading; a Section outside that cut is Unresolved. This is a different data face from block_read_cell/box/column, so in the same frame at the same coordinate block_read_cell may report Ready while raycast/sweep/overlap report Unresolved. Contract: physicsQuery.dataSource.",
+      "noNonVoxelBodies": "v1 answers about voxels only. The three result structs carry no target discriminator and this ABI exposes no body-registration entry point; adding either requires an ADR. Contract: physicsQuery.nonVoxelBodies."
     }
   },
   "directAbiTests": [
