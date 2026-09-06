@@ -215,6 +215,49 @@ fn live_root_table_covers_c4_timer_slots() {
     );
 }
 
+/// 反例探针（R-00496）：`timer_register_dispatch` 转发到内核未 gate 的
+/// `try_register_dispatch`，其超预算失败必须映射为既有状态码
+/// `TimerScheduleBudgetExceeded`(11)，不得静默成功。预算值是内核侧的实现细节，
+/// 这里只钉「会拒绝」与「拒绝码」，不钉具体阈值。
+#[test]
+fn timer_register_dispatch_over_budget_returns_schedule_budget_exceeded() {
+    let mut table = std::ptr::null();
+    assert_eq!(
+        unsafe { lumio_engine_get_api_v1(1, &mut table) },
+        LumioStatus::Success as i32
+    );
+    let table = unsafe { &*table };
+    let create = table.timer_create_manager.unwrap();
+    let register = table.timer_register_dispatch.unwrap();
+
+    let mut manager = std::ptr::null_mut::<c_void>();
+    assert_eq!(
+        unsafe { create(0, &mut manager) },
+        LumioStatus::Success as i32
+    );
+
+    // 唯一 id 逐个注册，直到内核拒绝；上限远高于内核默认预算，兜底防死循环。
+    const PROBE_CEILING: u32 = 1 << 20;
+    let mut rejected_at = None;
+    for dispatch_id in 1..=PROBE_CEILING {
+        let status = unsafe { register(manager, dispatch_id) };
+        if status != LumioStatus::Success as i32 {
+            rejected_at = Some((dispatch_id, status));
+            break;
+        }
+    }
+
+    let (dispatch_id, status) = rejected_at.expect("注册必须在预算耗尽时被拒绝，而不是无限成功");
+    assert_eq!(
+        status,
+        LumioStatus::TimerScheduleBudgetExceeded as i32,
+        "第 {dispatch_id} 个 dispatch 超预算必须返回 TimerScheduleBudgetExceeded(11)，实际 {status}"
+    );
+
+    let destroy = table.timer_destroy_manager.unwrap();
+    assert_eq!(unsafe { destroy(manager) }, LumioStatus::Success as i32);
+}
+
 #[test]
 fn live_root_table_wires_a1_voxel_slots_including_the_three_physics_slots() {
     let mut table = std::ptr::null();
