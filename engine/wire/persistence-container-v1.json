@@ -1,0 +1,345 @@
+{
+  "contractId": "lumio.persistence-container.v1",
+  "version": 1,
+  "kind": "persistence-container-contract",
+  "purpose": "持久化容器层公共契约的唯一真值：定义检查点组 manifest、流水记录信封与哈希链、耐久回执、三档耐久性语义与丢失边界、固定恢复顺序，以及成组原子激活与挂起失败语义。消费方：LumioServer（容器层：文件锁、草稿交接、fsync 与保留策略、恢复编排）、LumioGameRuntime（内容层：ECS/Voxel 状态切片、哈希链增量生成、OnHydrate 恢复）。",
+  "rulings": [
+    "ADR-063 第 3 条：发号器按块预留号段，落盘后才发号；快照存「已占到哪」而不是「下一个号」；崩溃恢复从已占段之后继续，没发出去的号作废",
+    "ADR-063 第 6 条：存档记账只有一本——要存档的字段一律 Sync<T> 打 [Persist]，要存档不上网写 Scope.None；复制按 Scope 挑人，存档不看 Scope 全收",
+    "ADR-070：持久化责任边界归属——容器层归 Server，内容层归 Runtime；Server 删废弃 Journal LW01 并在容器层按本契约重做"
+  ],
+  "ownership": {
+    "server": {
+      "layer": "container",
+      "responsibilities": [
+        "文件目录布局与跨平台路径管理（一个世界一个目录）",
+        "单写锁（writer.lock）与排他性保障",
+        "草稿区写入、校验、原子重命名交接与旧检查点垫底保留",
+        "持久化耐久档位声明与物理同步（fsync / sync_directory / process-crash）",
+        "流水记录信封的顺序追加、刷盘与单向哈希链校验",
+        "向 Runtime 派发耐久回执（durableThroughSeq）",
+        "恢复流水线编排：严格按「注册表 -> 世界 -> 实体 -> 玩家落位」固定顺序恢复"
+      ],
+      "forbidden": [
+        "解析或篡改 ECS 实体快照或 Voxel 改动层的不透明载荷字节（opaque payload）",
+        "在容器层自行定义业务状态机或额外状态切片",
+        "在未声明耐久档位或违反原子激活条件时开档或发布检查点"
+      ]
+    },
+    "runtime": {
+      "layer": "content",
+      "responsibilities": [
+        "生成原子检查点切点（ECS 实体列表、已占号段 reservedThroughNetEntityId、Voxel 改动层）",
+        "计算各不透明载荷字节的 SHA-256 摘要与字节长度",
+        "生成单调递增的流水记录体（opaque body），填入 seq 与 tick",
+        "接收持久化耐久回执并精确清脏已确认的 Sync<T> 修订",
+        "在读取检查点时执行纯的 OnHydrate 重建与构造期修剪"
+      ],
+      "forbidden": [
+        "直接执行文件系统 fsync、文件锁或跨进程目录重命名操作",
+        "在非提交点切片或将体素与实体拆分在不同修订切点发布",
+        "在恢复过程中绕过固定恢复顺序或对未就位的引物做降级吞错"
+      ]
+    }
+  },
+  "durabilityProfiles": {
+    "rule": "宿主开档前必须声明耐久档位；未声明或声明未知档位视为非法，必须拒绝开档（durability_profile_missing）。",
+    "profiles": {
+      "durable": {
+        "description": "完整档：每批流水或检查点刷盘必带完整 directory/file fsync（受平台支持限制），断电不丢数据。",
+        "lossBoundary": "0 丢失（断电或崩溃均不丢已确认事务）。",
+        "platformSupport": "Unix / POSIX 支持完整 power-loss fsync；Windows 仅在特定驱动下支持。"
+      },
+      "async": {
+        "description": "异步档：流水先写入 OS 缓冲，后台按秒级窗口（flushWindowMs）批量刷盘；默认生产 DS 推荐档位。",
+        "lossBoundary": "最多丢失最近 flushWindowMs 攒批窗口内的变更（秒级丢失边界）。",
+        "platformSupport": "全平台支持。"
+      },
+      "snapshot_only": {
+        "description": "仅快照档：只在检查点发生时成组写盘，不维护或不刷流水，Local / 移动模式默认档位。",
+        "lossBoundary": "丢失到上一个成功激活的检查点（丢失至检查点间隔）。",
+        "platformSupport": "全平台支持。"
+      }
+    }
+  },
+  "checkpointManifest": {
+    "description": "检查点组描述文件（manifest.json）。世界与实体成组换档，必须包含完整参与者清单与状态校验值。",
+    "required": {
+      "manifestVersion": "u32",
+      "generation": "u64",
+      "identity": {
+        "roomId": "string",
+        "releaseId": "string",
+        "contractId": "string",
+        "contentFingerprint": "string"
+      },
+      "tick": "u64",
+      "walSequence": "u64",
+      "durabilityProfile": "enum:durabilityProfileNames",
+      "baseMapReference": {
+        "baseMapId": "string",
+        "version": "string",
+        "contentSha256": "hex-string-64"
+      },
+      "participants": {
+        "runtime": {
+          "payloadFile": "const:runtime.bin",
+          "lengthBytes": "u64",
+          "payloadSha256": "hex-string-64",
+          "reservedThroughNetEntityId": "u64"
+        }
+      }
+    },
+    "optional": {
+      "voxelParticipant": {
+        "payloadFile": "const:voxel.bin",
+        "lengthBytes": "u64",
+        "payloadSha256": "hex-string-64",
+        "sectionCount": "u32"
+      }
+    },
+    "rules": [
+      "若世界声明包含体素，voxelParticipant 必须存在；若不存在或哈希不匹配，整组检查点无效。",
+      "草稿区命名为 checkpoint-<generation>.draft，完全写入并落盘后原子重命名为 checkpoint-<generation>。",
+      "激活新检查点后，旧检查点垫底保留，不得原地覆盖覆盖写入。"
+    ]
+  },
+  "journalEnvelope": {
+    "description": "流水记录（Journal Record）物理信封。用于检查点之间的增量变更追加，由哈希链保证连续完整。",
+    "hashChainRule": "currentHash = SHA256(prevHash || u64_le(seq) || u64_le(tick) || u32_le(providerId) || bodyBytes)。创世第一条的 prevHash 为 64 字符全 0。",
+    "required": {
+      "seq": "u64",
+      "tick": "u64",
+      "prevHash": "hex-string-64",
+      "checksum": "hex-string-64",
+      "providerId": "enum:providerIds",
+      "body": "hex-bytes"
+    }
+  },
+  "durabilityReceipt": {
+    "description": "容器层在数据落盘（达到所选耐久档位边界）后下发给 Runtime 的回执。",
+    "required": {
+      "durableThroughSeq": "u64",
+      "flushedTick": "u64",
+      "durabilityProfile": "enum:durabilityProfileNames",
+      "batchWindowMs": "u32"
+    },
+    "semantics": "Runtime 接收到 durableThroughSeq 后，方可将 sequence <= durableThroughSeq 的 Sync<T> 脏标记清除并放行内存淘汰。"
+  },
+  "recoveryOrder": {
+    "description": "冷启动读档与崩溃恢复严格遵循四阶段固定顺序，禁止跨阶段逆序加载。",
+    "stages": [
+      { "order": 1, "name": "registry", "target": "加载配置表、组件与 BlockType 内容注册表，校验 contentFingerprint" },
+      { "order": 2, "name": "world", "target": "加载 baseMap 原始地图资产与体素 Section 改动层，校验依赖闭包" },
+      { "order": 3, "name": "entities", "target": "回放检查点实体与流水，执行构造期修剪，执行纯 OnHydrate 重建活体" },
+      { "order": 4, "name": "placement", "target": "准入就绪，玩家连接接入并放置到已就位的实体与体素坐标上" }
+    ],
+    "dependencySuspension": "若实体引用的 Block/Section 尚未就绪，加载状态机必须进入挂起等待态（load_suspended_missing_voxel），严禁将缺块当空气或丢弃实体。"
+  },
+  "errorCodes": [
+    "checkpoint_generation_exhausted",
+    "checkpoint_hash_mismatch",
+    "checkpoint_incomplete_group",
+    "checkpoint_bounds_exceeded",
+    "checkpoint_corrupt_manifest",
+    "durability_profile_missing",
+    "durability_profile_unsupported",
+    "journal_sequence_gap",
+    "journal_hash_chain_broken",
+    "journal_corrupt_record",
+    "load_suspended_missing_voxel",
+    "recovery_order_violation",
+    "writer_lock_conflict"
+  ],
+  "enums": {
+    "durabilityProfileNames": ["durable", "async", "snapshot_only"],
+    "providerIds": [1, 2]
+  },
+  "rules": [
+    {
+      "id": "CHK-01",
+      "description": "检查点 manifest 必须声明已知合法耐久档位",
+      "enforcedBy": "validator",
+      "onViolation": "durability_profile_missing"
+    },
+    {
+      "id": "CHK-02",
+      "description": "检查点参与者载荷哈希与字节长度必须匹配",
+      "enforcedBy": "validator",
+      "onViolation": "checkpoint_hash_mismatch"
+    },
+    {
+      "id": "CHK-03",
+      "description": "世界与实体必须成组原子激活，体素世界若缺失体素参与者整组作废",
+      "enforcedBy": "receiver",
+      "onViolation": "checkpoint_incomplete_group"
+    },
+    {
+      "id": "JRN-01",
+      "description": "流水序号必须从 1 开始严格单调连续递增",
+      "enforcedBy": "validator",
+      "onViolation": "journal_sequence_gap"
+    },
+    {
+      "id": "JRN-02",
+      "description": "流水哈希链必须自创世 0 哈希起单调闭合吻合",
+      "enforcedBy": "validator",
+      "onViolation": "journal_hash_chain_broken"
+    },
+    {
+      "id": "REC-01",
+      "description": "实体依赖的体素未就位时必须挂起等待，不得把缺块当空气",
+      "enforcedBy": "receiver",
+      "onViolation": "load_suspended_missing_voxel"
+    },
+    {
+      "id": "REC-02",
+      "description": "恢复过程必须按固定四阶段顺序执行",
+      "enforcedBy": "receiver",
+      "onViolation": "recovery_order_violation"
+    }
+  ],
+  "testCases": [
+    {
+      "name": "valid_checkpoint_manifest",
+      "target": "checkpointManifest",
+      "manifest": {
+        "manifestVersion": 1,
+        "generation": 104,
+        "identity": {
+          "roomId": "room-bomber-01",
+          "releaseId": "rel-20260906-1",
+          "contractId": "lumio.persistence-container.v1",
+          "contentFingerprint": "c0ffee0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        },
+        "tick": 4500,
+        "walSequence": 128,
+        "durabilityProfile": "async",
+        "baseMapReference": {
+          "baseMapId": "map-arena-small",
+          "version": "1.0.0",
+          "contentSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        },
+        "participants": {
+          "runtime": {
+            "payloadFile": "runtime.bin",
+            "lengthBytes": 1024,
+            "payloadSha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+            "reservedThroughNetEntityId": 2048
+          }
+        },
+        "voxelParticipant": {
+          "payloadFile": "voxel.bin",
+          "lengthBytes": 4096,
+          "payloadSha256": "ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d",
+          "sectionCount": 16
+        }
+      }
+    },
+    {
+      "name": "valid_journal_hash_chain",
+      "target": "journalEnvelope",
+      "records": [
+        {
+          "seq": 1,
+          "tick": 100,
+          "prevHash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "checksum": "d14a028c2a3a2bc9476102bb288234c415a2b01f828ea62ac5b3e42f",
+          "providerId": 1,
+          "body": "01020304"
+        },
+        {
+          "seq": 2,
+          "tick": 101,
+          "prevHash": "d14a028c2a3a2bc9476102bb288234c415a2b01f828ea62ac5b3e42f",
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "providerId": 2,
+          "body": "aabbccdd"
+        }
+      ]
+    },
+    {
+      "name": "valid_durability_receipt",
+      "target": "durabilityReceipt",
+      "receipt": {
+        "durableThroughSeq": 128,
+        "flushedTick": 4500,
+        "durabilityProfile": "async",
+        "batchWindowMs": 1000
+      }
+    }
+  ],
+  "invalidCases": [
+    {
+      "name": "missing_durability_profile_rejected",
+      "target": "checkpointManifest",
+      "violates": "CHK-01",
+      "given": {
+        "manifestVersion": 1,
+        "generation": 1,
+        "durabilityProfile": ""
+      },
+      "expectedRejection": "durability_profile_missing"
+    },
+    {
+      "name": "payload_hash_mismatch_rejected",
+      "target": "checkpointManifest",
+      "violates": "CHK-02",
+      "given": {
+        "runtimePayloadExpectedSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "runtimePayloadActualSha256": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "expectedRejection": "checkpoint_hash_mismatch"
+    },
+    {
+      "name": "incomplete_group_rejected",
+      "target": "checkpointManifest",
+      "violates": "CHK-03",
+      "given": {
+        "worldRequiresVoxel": true,
+        "voxelParticipantPresent": false
+      },
+      "expectedRejection": "checkpoint_incomplete_group"
+    },
+    {
+      "name": "journal_sequence_gap_rejected",
+      "target": "journalEnvelope",
+      "violates": "JRN-01",
+      "given": {
+        "lastSeq": 1,
+        "incomingSeq": 3
+      },
+      "expectedRejection": "journal_sequence_gap"
+    },
+    {
+      "name": "journal_hash_chain_broken_rejected",
+      "target": "journalEnvelope",
+      "violates": "JRN-02",
+      "given": {
+        "prevHash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "expectedPrevHash": "d14a028c2a3a2bc9476102bb288234c415a2b01f828ea62ac5b3e42f"
+      },
+      "expectedRejection": "journal_hash_chain_broken"
+    },
+    {
+      "name": "entity_load_without_voxel_suspended",
+      "target": "recoveryOrder",
+      "violates": "REC-01",
+      "given": {
+        "entityPosition": [10, 64, 10],
+        "sectionReady": false
+      },
+      "expectedRejection": "load_suspended_missing_voxel"
+    },
+    {
+      "name": "player_placement_before_world_rejected",
+      "target": "recoveryOrder",
+      "violates": "REC-02",
+      "given": {
+        "attemptedStage": "placement",
+        "completedStages": ["registry"]
+      },
+      "expectedRejection": "recovery_order_violation"
+    }
+  ]
+}

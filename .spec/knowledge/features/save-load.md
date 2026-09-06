@@ -235,8 +235,8 @@ sequenceDiagram
 | 卡 | 内容 | 对应模块 |
 |---|---|---|
 | 0-1 | 实体快照 payload 与恢复契约：canonical 实体列表、Full/Partial、**构造期修剪契约点**、`OnHydrate` 纯度、互引成组字段 | M4 / M7 / M9 |
-| 0-2 | 世界清单契约：户口、指纹、来历、导入证据、依赖闭包、备份闭包 | M1 |
-| 0-3 | 耐久档位 profile：三档语义 + 各自丢失边界 + 默认档 + 正常退出必落盘 + 运行时可切 | M6 |
+| 0-2 | 世界清单契约：户口、指纹、来历、导入证据、依赖闭包、备份闭包——契约已落：[`persistence-container-v1`](../../../engine/wire/persistence-container-v1.json)（容器层，ADR-070） | M1 |
+| 0-3 | 耐久档位 profile：三档语义 + 各自丢失边界 + 默认档 + 正常退出必落盘 + 运行时可切——契约已落：[`persistence-container-v1`](../../../engine/wire/persistence-container-v1.json)（容器层，ADR-070） | M6 |
 | 0-4 | 体素改动层与派发契约：单层持久化 Diff、按视野增量、零字节短票（与 DS 的体素 chunk 状态机卡合并） | M5 |
 | 0-5 | 版本迁移契约：类型指纹、两条小改路径、大改拒开 + 转档工具、读时兼容永不写回 | M8 |
 
