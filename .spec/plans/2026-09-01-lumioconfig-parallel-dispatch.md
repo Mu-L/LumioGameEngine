@@ -1,3 +1,11 @@
+---
+name: 2026-09-01-lumioconfig-parallel-dispatch
+description: LumioConfig 并行线派活提示词——与 RM-00011 零交集、施工面无重叠的整段可粘贴提示词;开 LumioConfig 并行会话前查
+metadata:
+  type: doc
+  status: 已交付
+---
+
 # LumioConfig 并行线派活提示词（与 RM-00011 零交集）
 
 生成日期：2026-09-01

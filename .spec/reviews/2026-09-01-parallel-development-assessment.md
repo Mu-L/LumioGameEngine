@@ -1,3 +1,11 @@
+---
+name: 2026-09-01-parallel-development-assessment
+description: RM-00011 之外盘子的并行开发编排报告——哪些可并行、先搭哪些底层通用模块;排并行批次前查
+metadata:
+  type: doc
+  status: 已交付
+---
+
 # 并行开发编排报告（RM-00011 之外的盘子）
 
 日期：2026-09-01
