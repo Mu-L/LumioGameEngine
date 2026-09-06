@@ -270,6 +270,7 @@ dependencies = [
  "lumio-voxel-contracts",
  "lumio-voxel-domain",
  "lumio-voxel-ops",
+ "lumio-voxel-project",
  "lumio-voxel-world",
 ]
 

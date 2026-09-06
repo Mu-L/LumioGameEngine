@@ -14,6 +14,9 @@ public sealed class VoxelFacadeTests
     private static readonly Sdk.VoxelCommitFn Commit = CommitImpl;
     private static readonly Sdk.VoxelAbortFn Abort = AbortImpl;
     private static readonly Sdk.VoxelRevisionFn Revision = RevisionImpl;
+    private static readonly Sdk.VoxelRaycastFn Raycast = RaycastImpl;
+    private static readonly Sdk.VoxelSweepFn Sweep = SweepImpl;
+    private static readonly Sdk.VoxelOverlapFn Overlap = OverlapImpl;
     private static int AbortCalls;
     private static ManualResetEventSlim? PrepareEntered;
     private static ManualResetEventSlim? LeaseDisposed;
@@ -273,6 +276,77 @@ public sealed class VoxelFacadeTests
         Assert.Equal(1051, Sdk.VoxelErrorCodeMap.ToStatus(code));
     }
 
+    /// <summary>
+    /// Unresolved 必须原样浮到托管层：既不塌缩成 Miss，也不塌缩成 Hit，而且携带 SectionKey。
+    /// </summary>
+    [Fact]
+    public void RaycastSurfacesUnresolvedWithTheBlockingSectionKey()
+    {
+        var api = CreateApi(raycast: Pointer(Raycast));
+        using var lease = CreateLease(api);
+        var world = lease.CreateVoxelWorld((nint)0x1234);
+
+        var result = world.Raycast(new Sdk.VoxelRaycastRequest(
+            new Sdk.VoxelWorldPoint(0.5f, 31.5f, 0.5f),
+            new Sdk.VoxelWorldPoint(0f, -1f, 0f),
+            64f,
+            MaterialMaskSolid));
+
+        Assert.Equal(Sdk.VoxelQueryResolution.Unresolved, result.Resolution);
+        Assert.NotEqual(Sdk.VoxelQueryResolution.Miss, result.Resolution);
+        Assert.NotEqual(Sdk.VoxelQueryResolution.Hit, result.Resolution);
+        Assert.Equal(new Sdk.VoxelSectionKey(3, 1, -4), result.UnresolvedSection);
+        Assert.Equal(0u, result.BlockId);
+    }
+
+    [Fact]
+    public void SweepReturnsExplicitResolutionCollisionAndUnsignedBlockId()
+    {
+        var api = CreateApi(sweep: Pointer(Sweep));
+        using var lease = CreateLease(api);
+        var world = lease.CreateVoxelWorld((nint)0x1234);
+
+        var result = world.Sweep(new Sdk.VoxelSweepRequest(
+            new Sdk.VoxelWorldPoint(0.5f, 2.5f, 0.5f),
+            new Sdk.VoxelWorldPoint(0.5f, 0.9f, 0.5f),
+            new Sdk.VoxelWorldPoint(0f, -4f, 0f),
+            MaterialMaskSolid));
+
+        Assert.Equal(Sdk.VoxelQueryResolution.Hit, result.Resolution);
+        Assert.True(result.Collided);
+        Assert.Equal(0.25f, result.TravelFraction);
+        Assert.InRange(result.TravelFraction, 0f, 1f);
+        Assert.Equal(0x80000123u, result.BlockId);
+        Assert.Equal(new Sdk.VoxelWorldCoordinate(7, 9, -2), result.HitCell);
+        Assert.Equal(1f, result.HitNormal.Y);
+    }
+
+    [Fact]
+    public void OverlapWritesCallerBufferAndReportsTruncationWithTheActualCount()
+    {
+        var api = CreateApi(overlap: Pointer(Overlap));
+        using var lease = CreateLease(api);
+        var world = lease.CreateVoxelWorld((nint)0x1234);
+        var hits = new Sdk.VoxelOverlapHit[2];
+
+        var result = world.Overlap(
+            new Sdk.VoxelOverlapRequest(
+                new Sdk.VoxelWorldPoint(5f, 5.5f, 5.5f),
+                new Sdk.VoxelWorldPoint(5f, 0.5f, 0.5f),
+                MaterialMaskSolid),
+            hits);
+
+        Assert.Equal(Sdk.VoxelQueryResolution.Hit, result.Resolution);
+        Assert.Equal(5u, result.ActualCount);
+        Assert.True(result.Truncated);
+        Assert.Equal(0x80000100u, hits[0].BlockId);
+        Assert.Equal(0x80000101u, hits[1].BlockId);
+        Assert.Equal(new Sdk.VoxelWorldCoordinate(1, 5, 6), hits[1].Cell);
+    }
+
+    /// <summary>契约 voxel.enums.material_mask：位 0 = Solid。</summary>
+    private const uint MaterialMaskSolid = 1;
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static WeakReference CreateForgottenToken()
     {
@@ -293,7 +367,10 @@ public sealed class VoxelFacadeTests
         nint blockReadBox = 0,
         nint blockWritePrepare = 0,
         nint blockWriteCommit = 0,
-        nint blockWriteAbort = 0)
+        nint blockWriteAbort = 0,
+        nint raycast = 0,
+        nint sweep = 0,
+        nint overlap = 0)
         => new()
         {
             AbiVersion = AbiConstants.AbiVersion,
@@ -311,6 +388,9 @@ public sealed class VoxelFacadeTests
             BlockWriteCommit = blockWriteCommit,
             BlockWriteAbort = blockWriteAbort,
             SectionRevisionQuery = Pointer(Revision),
+            Raycast = raycast,
+            Sweep = sweep,
+            Overlap = overlap,
         };
 
     private static nint Pointer(Delegate callback)
@@ -398,6 +478,70 @@ public sealed class VoxelFacadeTests
     private static int AbortImpl(nint _, nint __)
     {
         Interlocked.Increment(ref AbortCalls);
+        return 0;
+    }
+
+    /// <summary>Unresolved：携带挡路的 SectionKey，且不带任何命中数据。</summary>
+    private static int RaycastImpl(nint _, nint request, nint result)
+    {
+        var incoming = Marshal.PtrToStructure<VoxelRaycastRequest>(request);
+        Assert.Equal(1u, incoming.MaterialMask);
+        Assert.Equal(-1f, incoming.Direction.Y);
+        Marshal.StructureToPtr(new VoxelRaycastResult
+        {
+            Resolution = VoxelQueryResolution.Unresolved,
+            UnresolvedSection = new VoxelSectionKey { X = 3, Y = 1, Z = -4, Reserved = new byte[3] },
+            HitCell = new VoxelWorldCoordinate { X = 0, Y = 0, Z = 0 },
+            BlockId = 0,
+            HitPoint = default,
+            HitNormal = default,
+            TravelDistance = 0,
+        }, result, false);
+        return 0;
+    }
+
+    private static int SweepImpl(nint _, nint request, nint result)
+    {
+        var incoming = Marshal.PtrToStructure<VoxelSweepRequest>(request);
+        // 形状按值内联：center 即位姿，没有单独的位姿指针。
+        Assert.Equal(2.5f, incoming.Center.Y);
+        Assert.Equal(0.5f, incoming.HalfExtents.X);
+        Marshal.StructureToPtr(new VoxelSweepResult
+        {
+            Resolution = VoxelQueryResolution.Hit,
+            Collided = 1,
+            Reserved = new byte[3],
+            TravelFraction = 0.25f,
+            UnresolvedSection = new VoxelSectionKey { X = 0, Y = 0, Z = 0, Reserved = new byte[3] },
+            HitCell = new VoxelWorldCoordinate { X = 7, Y = 9, Z = -2 },
+            BlockId = 0x80000123,
+            HitPoint = new VoxelWorldPoint { X = 1, Y = 2, Z = 3 },
+            HitNormal = new VoxelWorldPoint { X = 0, Y = 1, Z = 0 },
+        }, result, false);
+        return 0;
+    }
+
+    /// <summary>容量 2 罩 5 格：写满调用方缓冲，并回报 truncated 与实际总数。</summary>
+    private static int OverlapImpl(nint _, nint __, nint hits, uint capacity, nint result)
+    {
+        var hitSize = Marshal.SizeOf<VoxelOverlapHit>();
+        for (var index = 0; index < (int)capacity; index++)
+        {
+            Marshal.StructureToPtr(new VoxelOverlapHit
+            {
+                Cell = new VoxelWorldCoordinate { X = index, Y = 5, Z = 6 },
+                BlockId = (uint)(0x80000100 + index),
+            }, hits + index * hitSize, false);
+        }
+
+        Marshal.StructureToPtr(new VoxelOverlapResult
+        {
+            Resolution = VoxelQueryResolution.Hit,
+            UnresolvedSection = new VoxelSectionKey { X = 0, Y = 0, Z = 0, Reserved = new byte[3] },
+            ActualCount = 5,
+            Truncated = 1,
+            Reserved = new byte[3],
+        }, result, false);
         return 0;
     }
 

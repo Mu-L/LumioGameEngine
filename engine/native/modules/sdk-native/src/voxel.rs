@@ -1,15 +1,20 @@
 use crate::abi_generated::{
     VoxelBlockReadCellResult, VoxelBlockReadResult, VoxelBlockWriteEntry, VoxelBoxRequest,
-    VoxelColumnRequest, VoxelPresence, VoxelSectionKey, VoxelSectionRevisionResult,
-    VoxelSectionSegment, VoxelWorldCoordinate, VoxelWriteReceipt,
+    VoxelColumnRequest, VoxelOverlapHit, VoxelOverlapRequest, VoxelOverlapResult, VoxelPresence,
+    VoxelQueryResolution, VoxelRaycastRequest, VoxelRaycastResult, VoxelSectionKey,
+    VoxelSectionRevisionResult, VoxelSectionSegment, VoxelSweepRequest, VoxelSweepResult,
+    VoxelWorldCoordinate, VoxelWorldPoint, VoxelWriteReceipt,
 };
 use crate::LumioStatus;
 use lumio_voxel_contracts::sha256;
-use lumio_voxel_domain::block::{BlockId, CellOffset};
+use lumio_voxel_domain::block::{
+    BlockId, BlockType, CellOffset, MaterialClass as CatalogMaterialClass, OfficialCatalog,
+};
 use lumio_voxel_domain::config_snapshot::{
     HostCapabilitySet, VoxelConfigInput, VoxelConfigSnapshot, CONFIG_TABLE_SCHEMA,
     HOST_CAPABILITY_SCHEMA,
 };
+use lumio_voxel_domain::key::SectionId;
 use lumio_voxel_domain::publication::PublishedStateRoot;
 use lumio_voxel_domain::revision::{RevisionStamp, REVISION_STAMP_SCHEMA};
 use lumio_voxel_domain::section::{
@@ -19,6 +24,7 @@ use lumio_voxel_domain::section::{
 use lumio_voxel_ops::async_support::{OriginEnvelope, OriginToken};
 use lumio_voxel_ops::mutation::{MutationEntry, MutationRequest, PreparedMutation};
 use lumio_voxel_ops::query::{BlockReadSection, BlockReadWorld, VoxelQueryRequest};
+use lumio_voxel_project::physics_query as physics;
 use lumio_voxel_world::port::VoxelWorldPortAdapter;
 use lumio_voxel_world::world::{
     PinBudget, PinId, RegionPinManager, VoxelWorld, WorldCommand, WorldConfigAdapter,
@@ -87,6 +93,10 @@ static NEXT_PROVIDER_ID: AtomicU64 = AtomicU64::new(1);
 pub struct NativeVoxelProvider {
     world: VoxelWorld,
     block_world: BlockReadWorld,
+    /// 材质类表：契约 `physicsQuery.materialClassTable.nativeEntry = world-creation-injection`
+    /// ——只在创建世界时注入一次，既不是根表槽也不是查询参数。未注入的世界不得回答任何物理查询
+    /// （`resolvedBeforeQueryable` / `noBuiltInFallback`）。
+    materials: Option<CatalogMaterialClasses>,
     sections: BTreeMap<SectionKey, SectionState>,
     prepared: BTreeMap<usize, Box<PreparedToken>>,
     transactions: BTreeMap<u64, usize>,
@@ -124,6 +134,7 @@ impl NativeVoxelProvider {
         Self {
             world,
             block_world: BlockReadWorld::new(),
+            materials: None,
             sections: BTreeMap::new(),
             prepared: BTreeMap::new(),
             transactions: BTreeMap::new(),
@@ -132,8 +143,29 @@ impl NativeVoxelProvider {
         }
     }
 
+    /// 宿主在创建体素世界时注入材质类表（契约 `physicsQuery.materialClassTable`）。
+    ///
+    /// 唯一来源是官方方块目录 `blockCatalog` 的 `materialClass` 一列——Native 不持第二份表、
+    /// 不做内置回落，也不把目录做成根表槽或逐次查询参数。
+    pub fn with_material_classes(catalog: OfficialCatalog) -> Self {
+        let mut provider = Self::new();
+        provider.materials = Some(CatalogMaterialClasses { catalog });
+        provider
+    }
+
     pub fn world_state(&self) -> lumio_voxel_world::world::WorldStateView {
         self.world.state_view()
+    }
+
+    /// 已发布切面的 WorldRevision 与逐 Section 的 SectionRevision。
+    ///
+    /// 用于证明查询是只读的（契约 `physicsQuery.readOnly`）：查询前后这两者必须逐一不变。
+    pub fn published_revisions(&self) -> (u64, BTreeMap<String, u64>) {
+        let view = self.world.publication_authority().capture();
+        (
+            view.stamp().world_revision,
+            view.stamp().section_revision_set.clone(),
+        )
     }
 
     pub fn as_opaque_ptr(&mut self) -> *mut c_void {
@@ -363,6 +395,105 @@ impl NativeVoxelProvider {
         }
         Ok(())
     }
+
+    /// 物理查询的只读输入：一份已发布的不可变切面 + 创建世界时注入的材质类表。
+    ///
+    /// 走 `publication_authority().capture()` 而不是 `ensure_world_query`——查询不得改变
+    /// 世界的任何一格（契约 `physicsQuery.readOnly`），所以这里不触发任何世界侧命令。
+    fn physics_inputs(
+        &self,
+    ) -> Result<(physics::PhysicsWorld, &CatalogMaterialClasses), &'static str> {
+        let materials = self
+            .materials
+            .as_ref()
+            .ok_or("collision_behavior_not_from_material_table")?;
+        let view = self.world.publication_authority().capture();
+        // `Unchanged` 是零字节短票据，按不可变原图基线解析，不在查询里另建一份存储。
+        let baseline = |id: &SectionId| {
+            self.sections
+                .get(&SectionKey(id.x(), id.y(), id.z()))
+                .and_then(|state| state.storage.clone())
+        };
+        let world = physics::PhysicsWorld::from_published_view_with_baseline(&view, &baseline)
+            .map_err(|error| error.error_id())?;
+        Ok((world, materials))
+    }
+
+    /// 与逐格读一致地带上驻留守卫：同一个世界不得在读路径拒绝、却在物理路径放行。
+    fn physics_query<'a>(
+        &'a self,
+        world: &'a physics::PhysicsWorld,
+        materials: &'a CatalogMaterialClasses,
+    ) -> physics::PhysicsQuery<'a, 'a> {
+        match self.world.region_pin_manager() {
+            Some(guard) => physics::PhysicsQuery::with_presence_guard(world, materials, guard),
+            None => physics::PhysicsQuery::new(world, materials),
+        }
+    }
+}
+
+/// 材质类表的 Native 适配：只读官方方块目录的 `materialClass` 一列。
+///
+/// 契约 `physicsQuery.filter.source` 要求「阻挡与否只能来自材质类表」，所以这里没有、
+/// 也不得有任何按 BlockId 分支的碰撞行为；解析不出材质类即 `unknown_material_class`
+/// （由 `physics_query` 侧在 `class_for` 返回 `None` 时抛出），不得当作不阻挡。
+struct CatalogMaterialClasses {
+    catalog: OfficialCatalog,
+}
+
+impl physics::MaterialClassLookup for CatalogMaterialClasses {
+    fn class_for(&self, block_type: BlockType) -> Option<physics::MaterialClass> {
+        match self.catalog.get(block_type) {
+            Ok(Some(definition)) => Some(match definition.material_class() {
+                CatalogMaterialClass::Solid => physics::MaterialClass::Solid,
+                CatalogMaterialClass::Liquid => physics::MaterialClass::Liquid,
+            }),
+            Ok(None) | Err(_) => None,
+        }
+    }
+}
+
+/// 契约 `voxel.enums.material_mask`：位序按 `materialClasses.v1Scope.classes` 声明顺序，
+/// 从最低位起一类占一位。第 2 位及以上未分配，必须为 0。
+const MATERIAL_MASK_SOLID: u32 = 1;
+const MATERIAL_MASK_LIQUID: u32 = 2;
+const MATERIAL_MASK_ASSIGNED_BITS: u32 = MATERIAL_MASK_SOLID | MATERIAL_MASK_LIQUID;
+
+/// 掩码 0 不是「全选」也不是错误码，而是不匹配任何材质类（`zeroMatchesNothing`）——
+/// 空掩码交给查询侧自然落到 Miss，而 Unresolved 仍然优先于 Miss。
+fn material_mask(raw: u32) -> Result<physics::MaterialMask, &'static str> {
+    if raw & !MATERIAL_MASK_ASSIGNED_BITS != 0 {
+        return Err("unknown_material_class");
+    }
+    let mut mask = physics::MaterialMask::empty();
+    if raw & MATERIAL_MASK_SOLID != 0 {
+        mask |= physics::MaterialMask::solid();
+    }
+    if raw & MATERIAL_MASK_LIQUID != 0 {
+        mask |= physics::MaterialMask::liquid();
+    }
+    Ok(mask)
+}
+
+fn physics_point(point: VoxelWorldPoint) -> physics::Vec3 {
+    physics::Vec3::new(point.x, point.y, point.z)
+}
+
+fn abi_point(point: physics::Vec3) -> VoxelWorldPoint {
+    VoxelWorldPoint {
+        x: point.x(),
+        y: point.y(),
+        z: point.z(),
+    }
+}
+
+fn abi_section_key(section: SectionId) -> VoxelSectionKey {
+    VoxelSectionKey::new(section.x(), section.y(), section.z())
+}
+
+fn abi_cell(cell: physics::CellCoord) -> Result<VoxelWorldCoordinate, &'static str> {
+    let y = u8::try_from(cell.y()).map_err(|_| "world_y_out_of_range")?;
+    Ok(VoxelWorldCoordinate::new(cell.x(), y, cell.z()))
 }
 
 fn approved_snapshot(label: &str) -> Arc<VoxelConfigSnapshot> {
@@ -1344,6 +1475,288 @@ pub unsafe extern "C" fn residency_pin_status(
     })
 }
 
+/// 根表 `raycast` 槽：转发到 VoxelEngine 的 DDA 实现（`lumio_voxel_project::physics_query`）。
+///
+/// 三态用 `resolution` 显式表达：Unresolved 携带挡路的 SectionKey，既不塌缩成 Miss
+/// （契约 `query.unresolved-is-not-air`），也不塌缩成 Hit（`query.unresolved-is-not-solid`），
+/// 且它是正常结局、不是错误码。
+///
+/// # Safety
+///
+/// 调用方必须保证 `request` 指向可读的 `VoxelRaycastRequest`、`out` 指向可写的
+/// `VoxelRaycastResult`（或传 null 走拒绝路径）。
+pub unsafe extern "C" fn raycast(
+    world: *mut c_void,
+    request: *const VoxelRaycastRequest,
+    out: *mut VoxelRaycastResult,
+) -> i32 {
+    ffi(|| {
+        if request.is_null() || out.is_null() {
+            return LumioStatus::InvalidArgument as i32;
+        }
+        let provider = match provider(world) {
+            Ok(provider) => provider,
+            Err(status) => return status,
+        };
+        // SAFETY: null 已在上面拒绝，调用方拥有该请求结构。
+        let request = unsafe { *request };
+        let mask = match material_mask(request.material_mask) {
+            Ok(mask) => mask,
+            Err(error) => return status_for_error(error),
+        };
+        let (physics_world, materials) = match provider.physics_inputs() {
+            Ok(inputs) => inputs,
+            Err(error) => return status_for_error(error),
+        };
+        let resolution = match provider.physics_query(&physics_world, materials).raycast(
+            physics_point(request.origin),
+            physics_point(request.direction),
+            request.max_distance,
+            mask,
+        ) {
+            Ok(resolution) => resolution,
+            Err(error) => return status_for_error(error.error_id()),
+        };
+
+        // 每条分支先整体清零再逐字段落笔：填充字节与未走到的字段都是确定的 0，
+        // 同一份世界同一组输入两次调用才可能逐字节相同（契约 `physicsQuery.determinism`）。
+        match resolution {
+            physics::QueryResolution::Hit(hit) => {
+                let cell = match abi_cell(hit.cell()) {
+                    Ok(cell) => cell,
+                    Err(error) => return status_for_error(error),
+                };
+                let block_id = hit.block_id().map_or(0, BlockId::raw);
+                let point = abi_point(hit.point());
+                let normal = abi_point(hit.normal());
+                let distance = hit.distance();
+                // SAFETY: `out` 非空且指向调用方拥有的一个完整结果结构。
+                unsafe {
+                    std::ptr::write_bytes(out, 0, 1);
+                    (*out).resolution = VoxelQueryResolution::Hit;
+                    // world_coordinate 的 y 后面有 3 字节结构填充：整体赋值会把局部量里
+                    // 未初始化的填充字节一起搬过来，逐字节确定性就没了。只逐标量落笔。
+                    (*out).hit_cell.x = cell.x;
+                    (*out).hit_cell.y = cell.y;
+                    (*out).hit_cell.z = cell.z;
+                    (*out).block_id = block_id;
+                    (*out).hit_point = point;
+                    (*out).hit_normal = normal;
+                    (*out).travel_distance = distance;
+                }
+            }
+            physics::QueryResolution::Miss => {
+                // SAFETY: 同上。
+                unsafe {
+                    std::ptr::write_bytes(out, 0, 1);
+                    (*out).resolution = VoxelQueryResolution::Miss;
+                }
+            }
+            physics::QueryResolution::Unresolved { section } => {
+                let key = abi_section_key(section);
+                // SAFETY: 同上。
+                unsafe {
+                    std::ptr::write_bytes(out, 0, 1);
+                    (*out).resolution = VoxelQueryResolution::Unresolved;
+                    (*out).unresolved_section = key;
+                }
+            }
+        }
+        LumioStatus::Success as i32
+    })
+}
+
+/// 根表 `sweep` 槽：把本帧位移的 AABB 扫掠转发到同一份 VoxelEngine 实现。
+///
+/// 形状按值内联（契约 `physicsQuery.shape.inlineByValue`）：`center` 即位姿，v1 无旋转无缩放。
+/// Miss 表示整段位移都走得通，因此 `travel_fraction` 是 1.0；Unresolved 不给可行进比例，
+/// 由调用方自己决定挂起还是保守处理。
+///
+/// # Safety
+///
+/// 调用方必须保证 `request` 指向可读的 `VoxelSweepRequest`、`out` 指向可写的
+/// `VoxelSweepResult`（或传 null 走拒绝路径）。
+pub unsafe extern "C" fn sweep(
+    world: *mut c_void,
+    request: *const VoxelSweepRequest,
+    out: *mut VoxelSweepResult,
+) -> i32 {
+    ffi(|| {
+        if request.is_null() || out.is_null() {
+            return LumioStatus::InvalidArgument as i32;
+        }
+        let provider = match provider(world) {
+            Ok(provider) => provider,
+            Err(status) => return status,
+        };
+        // SAFETY: null 已在上面拒绝，调用方拥有该请求结构。
+        let request = unsafe { *request };
+        let mask = match material_mask(request.material_mask) {
+            Ok(mask) => mask,
+            Err(error) => return status_for_error(error),
+        };
+        let (physics_world, materials) = match provider.physics_inputs() {
+            Ok(inputs) => inputs,
+            Err(error) => return status_for_error(error),
+        };
+        let shape = physics::Aabb::new(
+            physics_point(request.center),
+            physics_point(request.half_extents),
+        );
+        let resolution = match provider.physics_query(&physics_world, materials).sweep(
+            shape,
+            physics_point(request.displacement),
+            mask,
+        ) {
+            Ok(resolution) => resolution,
+            Err(error) => return status_for_error(error.error_id()),
+        };
+
+        match resolution {
+            physics::QueryResolution::Hit(hit) => {
+                let cell = match abi_cell(hit.cell()) {
+                    Ok(cell) => cell,
+                    Err(error) => return status_for_error(error),
+                };
+                let block_id = hit.block_id().map_or(0, BlockId::raw);
+                let point = abi_point(hit.point());
+                let normal = abi_point(hit.normal());
+                let fraction = hit.fraction();
+                // SAFETY: `out` 非空且指向调用方拥有的一个完整结果结构。
+                unsafe {
+                    std::ptr::write_bytes(out, 0, 1);
+                    (*out).resolution = VoxelQueryResolution::Hit;
+                    (*out).collided = 1;
+                    (*out).travel_fraction = fraction;
+                    // 同 raycast：world_coordinate 的填充字节不得整体搬运。
+                    (*out).hit_cell.x = cell.x;
+                    (*out).hit_cell.y = cell.y;
+                    (*out).hit_cell.z = cell.z;
+                    (*out).block_id = block_id;
+                    (*out).hit_point = point;
+                    (*out).hit_normal = normal;
+                }
+            }
+            physics::QueryResolution::Miss => {
+                // SAFETY: 同上。
+                unsafe {
+                    std::ptr::write_bytes(out, 0, 1);
+                    (*out).resolution = VoxelQueryResolution::Miss;
+                    (*out).travel_fraction = 1.0;
+                }
+            }
+            physics::QueryResolution::Unresolved { section } => {
+                let key = abi_section_key(section);
+                // SAFETY: 同上。
+                unsafe {
+                    std::ptr::write_bytes(out, 0, 1);
+                    (*out).resolution = VoxelQueryResolution::Unresolved;
+                    (*out).unresolved_section = key;
+                }
+            }
+        }
+        LumioStatus::Success as i32
+    })
+}
+
+/// 根表 `overlap` 槽：命中条目写进调用方缓冲，Native 不返回任何需要释放的句柄。
+///
+/// 装不下时按契约 `query.overflow-must-be-reported` 显式回报 `truncated` 与 `actual_count`
+/// （实际总条数），不静默截断。
+///
+/// # Safety
+///
+/// 调用方必须保证 `request` 指向可读的 `VoxelOverlapRequest`、`out_hits` 指向至少
+/// `hit_capacity` 个可写的 `VoxelOverlapHit`、`out` 指向可写的 `VoxelOverlapResult`。
+pub unsafe extern "C" fn overlap(
+    world: *mut c_void,
+    request: *const VoxelOverlapRequest,
+    out_hits: *mut VoxelOverlapHit,
+    hit_capacity: u32,
+    out: *mut VoxelOverlapResult,
+) -> i32 {
+    ffi(|| {
+        if request.is_null() || out.is_null() || (hit_capacity > 0 && out_hits.is_null()) {
+            return LumioStatus::InvalidArgument as i32;
+        }
+        let provider = match provider(world) {
+            Ok(provider) => provider,
+            Err(status) => return status,
+        };
+        // SAFETY: null 已在上面拒绝，调用方拥有该请求结构。
+        let request = unsafe { *request };
+        let mask = match material_mask(request.material_mask) {
+            Ok(mask) => mask,
+            Err(error) => return status_for_error(error),
+        };
+        let (physics_world, materials) = match provider.physics_inputs() {
+            Ok(inputs) => inputs,
+            Err(error) => return status_for_error(error),
+        };
+        let shape = physics::Aabb::new(
+            physics_point(request.center),
+            physics_point(request.half_extents),
+        );
+        // 中转缓冲的长度取「调用方容量」与「契约单次查询格数上限」的较小值：调用方声明再大的
+        // 容量也不会让 Native 按容量吃内存，而结果本身仍然只落在调用方缓冲里。
+        let staging_len = (hit_capacity as usize)
+            .min(crate::abi_generated::VOXEL_MAX_CELLS_PER_READ_REQUEST as usize);
+        let mut staging = vec![physics::OverlapHit::default(); staging_len];
+        let result = match provider.physics_query(&physics_world, materials).overlap(
+            shape,
+            mask,
+            &mut staging,
+        ) {
+            Ok(result) => result,
+            Err(error) => return status_for_error(error.error_id()),
+        };
+        let written = result.written_count().min(staging.len());
+        // 先把全部条目转换完再落笔：任何一条转换失败都不得在调用方缓冲里留下半份结果。
+        let mut hits = Vec::with_capacity(written);
+        for hit in staging.iter().take(written) {
+            match abi_cell(hit.cell()) {
+                Ok(cell) => hits.push((cell, hit.block_id().map_or(0, BlockId::raw))),
+                Err(error) => return status_for_error(error),
+            }
+        }
+        let actual_count = match u32::try_from(result.actual_count()) {
+            Ok(count) => count,
+            Err(_) => return status_for_error("query_buffer_overflow"),
+        };
+        let unresolved = result
+            .resolution()
+            .unresolved_section()
+            .map(abi_section_key);
+        let resolution = match result.resolution() {
+            physics::QueryResolution::Hit(()) => VoxelQueryResolution::Hit,
+            physics::QueryResolution::Miss => VoxelQueryResolution::Miss,
+            physics::QueryResolution::Unresolved { .. } => VoxelQueryResolution::Unresolved,
+        };
+
+        // SAFETY: `out_hits` 至少有 `hit_capacity` 个条目，而 `written <= staging_len
+        // <= hit_capacity`；`out` 非空且指向一个完整结果结构。
+        unsafe {
+            for (index, (cell, block_id)) in hits.into_iter().enumerate() {
+                let slot = out_hits.add(index);
+                std::ptr::write_bytes(slot, 0, 1);
+                // 同 raycast：world_coordinate 的填充字节不得整体搬运。
+                (*slot).cell.x = cell.x;
+                (*slot).cell.y = cell.y;
+                (*slot).cell.z = cell.z;
+                (*slot).block_id = block_id;
+            }
+            std::ptr::write_bytes(out, 0, 1);
+            (*out).resolution = resolution;
+            if let Some(key) = unresolved {
+                (*out).unresolved_section = key;
+            }
+            (*out).actual_count = actual_count;
+            (*out).truncated = u8::from(result.truncated());
+        }
+        LumioStatus::Success as i32
+    })
+}
+
 fn hex32(bytes: &[u8; 32]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(64);
@@ -1366,6 +1779,11 @@ impl VoxelSectionKey {
 }
 impl VoxelWorldCoordinate {
     pub const fn new(x: i32, y: u8, z: i32) -> Self {
+        Self { x, y, z }
+    }
+}
+impl VoxelWorldPoint {
+    pub const fn new(x: f32, y: f32, z: f32) -> Self {
         Self { x, y, z }
     }
 }
@@ -1429,6 +1847,53 @@ impl Default for VoxelSectionSegment {
             section_revision: 0,
             first_result: 0,
             result_count: 0,
+        }
+    }
+}
+impl Default for VoxelRaycastResult {
+    fn default() -> Self {
+        Self {
+            resolution: VoxelQueryResolution::Miss,
+            unresolved_section: VoxelSectionKey::new(0, 0, 0),
+            hit_cell: VoxelWorldCoordinate::new(0, 0, 0),
+            block_id: 0,
+            hit_point: VoxelWorldPoint::new(0.0, 0.0, 0.0),
+            hit_normal: VoxelWorldPoint::new(0.0, 0.0, 0.0),
+            travel_distance: 0.0,
+        }
+    }
+}
+impl Default for VoxelSweepResult {
+    fn default() -> Self {
+        Self {
+            resolution: VoxelQueryResolution::Miss,
+            collided: 0,
+            _reserved: [0; 3],
+            travel_fraction: 0.0,
+            unresolved_section: VoxelSectionKey::new(0, 0, 0),
+            hit_cell: VoxelWorldCoordinate::new(0, 0, 0),
+            block_id: 0,
+            hit_point: VoxelWorldPoint::new(0.0, 0.0, 0.0),
+            hit_normal: VoxelWorldPoint::new(0.0, 0.0, 0.0),
+        }
+    }
+}
+impl Default for VoxelOverlapHit {
+    fn default() -> Self {
+        Self {
+            cell: VoxelWorldCoordinate::new(0, 0, 0),
+            block_id: 0,
+        }
+    }
+}
+impl Default for VoxelOverlapResult {
+    fn default() -> Self {
+        Self {
+            resolution: VoxelQueryResolution::Miss,
+            unresolved_section: VoxelSectionKey::new(0, 0, 0),
+            actual_count: 0,
+            truncated: 0,
+            _reserved: [0; 3],
         }
     }
 }
@@ -1510,6 +1975,69 @@ mod tests {
             "voxel.errorCodes must not be empty in native-abi.json"
         );
         (base, codes)
+    }
+
+    /// 从 `native-abi.json` 的 `voxel.enums.material_mask` 里取一个整数字段。
+    fn contract_u32_after(body: &str, key: &str) -> u32 {
+        let start = body
+            .find(key)
+            .unwrap_or_else(|| panic!("native-abi.json material_mask must declare {key}"))
+            + key.len();
+        let rest = &body[start..];
+        let end = rest
+            .find([',', '}'])
+            .expect("a material_mask integer field must be terminated");
+        rest[..end]
+            .trim()
+            .parse()
+            .unwrap_or_else(|_| panic!("material_mask field {key} must be an integer"))
+    }
+
+    /// 掩码位分配的唯一真值是契约的 `voxel.enums.material_mask`。手写常量与它对不上时
+    /// (例如契约追加了一个材质类而这里没跟)本用例必须变红,而不是让一条错误的掩码悄悄放行。
+    #[test]
+    fn material_mask_bits_match_the_contract_declaration() {
+        let section_start = ABI_DEFINITION
+            .find("\"material_mask\"")
+            .expect("native-abi.json must declare voxel.enums.material_mask");
+        let section = &ABI_DEFINITION[section_start..];
+        let values_start = section
+            .find("\"values\"")
+            .expect("material_mask must declare values");
+        let values = &section[values_start..];
+
+        let solid = contract_u32_after(values, "\"Solid\":");
+        let liquid = contract_u32_after(values, "\"Liquid\":");
+        let assigned_bit_count = contract_u32_after(section, "\"assignedBitCount\":");
+
+        assert_eq!(MATERIAL_MASK_SOLID, solid, "Solid 掩码位与契约不一致");
+        assert_eq!(MATERIAL_MASK_LIQUID, liquid, "Liquid 掩码位与契约不一致");
+        assert_eq!(
+            MATERIAL_MASK_ASSIGNED_BITS,
+            solid | liquid,
+            "已分配位集合必须正好是契约声明的那些类"
+        );
+        assert_eq!(
+            MATERIAL_MASK_ASSIGNED_BITS.count_ones(),
+            assigned_bit_count,
+            "已分配位数必须等于契约的 assignedBitCount"
+        );
+
+        // 第 2 位及以上未分配:置位即 unknown_material_class,不得当作「未来的类」忽略。
+        let first_reserved = 1_u32 << assigned_bit_count;
+        assert_eq!(
+            material_mask(first_reserved),
+            Err("unknown_material_class"),
+            "第一位保留位置位必须被拒"
+        );
+        assert_eq!(
+            material_mask(u32::MAX),
+            Err("unknown_material_class"),
+            "全 1 掩码必须被拒"
+        );
+        // 掩码 0 是合法输入(不匹配任何类),不是错误码。
+        assert!(material_mask(0).is_ok(), "掩码 0 不得当成错误");
+        assert!(material_mask(MATERIAL_MASK_ASSIGNED_BITS).is_ok());
     }
 
     /// 穷尽性断言:手写的 `status_for_error` 必须覆盖公共契约里的**每一条**错误码,
