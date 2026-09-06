@@ -1,0 +1,1 @@
+../../.spec/decisions/ADR-071-container-delta-in-state-payload.md

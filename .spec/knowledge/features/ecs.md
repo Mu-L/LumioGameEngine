@@ -575,7 +575,7 @@ var restored = WorldManager.CreateFromSnapshot(snapshotBytes);   // 新世界；
 | 0-1 | 生命周期与结构事务契约：九回调语义（含 PostAttribute）、两道闸门、钩子禁令、撞单裁决表、**四步 → 13 相映射表**（含「只有 `EcsCommandBufferCommit` 可写 `GameWorld`」这条约束的现行落点） | M3 |
 | 0-2 | 字段声明规范：`Sync<T>(Scope, Authority, Notify)` 全集（含 `Scope.None`）× `[Persist]` 只配 Sync × 文件后缀归属 × 共享文件普通字段 lint × 每字段变化钩子（reason / 批语义）× 可预测 × 类型阶梯 × 一致性组 × 容器上限 × partial 文件布局与 lint | M4 |
 | 0-3 | 组件/字段 ID 命名空间：永久编号与退役封存规则；同步字段 id 由名字派生 | M4 |
-| 0-4 | 容器条目差量的线上编码：`SyncList`/`SyncDict` 差量在状态载荷内的布局 | M4 |
+| 0-4 | 容器条目差量的线上编码：`SyncList`/`SyncDict` 差量在状态载荷内的布局（见 [`engine/wire/container-delta-v1.json`](../../../engine/wire/container-delta-v1.json) 与 [ADR-071](../../decisions/ADR-071-container-delta-in-state-payload.md)） | M4 |
 | 0-5 | 视野关系契约：视野表键、世代号、双半径、安全/性能离开、成套进视野、排队接口、**粗筛清单形状与确定性判据** | M6 |
 | 0-6 | 引用与欠条契约：网络引用解析状态机、欠条表、墓碑查询语义 | M5 |
 | 0-7 | 双 Transform 契约：LogicTransform 网络表示、父子结构单、单写者 | M7 |

@@ -14,6 +14,7 @@
 | [`platform-port-v1.json`](platform-port-v1.json) | `lumio.platform-port.v1` | LumioPlatform HTTP 端口：邮箱注册 / 登录 / 会话 / 头像 / launch（ADR-061）；`account-port-v1.json` 的归属与 `registrationProfile` 同由 ADR-061 修订 | 由 `eng/verify-wire.mjs` 做结构/码表/声明级用例 |
 | [`voxel-world-v1.json`](voxel-world-v1.json) | `lumio.voxel-world.v1` | 体素世界三层分层与命名、Section/Chunk 规范键、BlockId 位段、Section 页三态信封、改动层派发与零字节短票、驻留回执，以及光照不入载荷的边界；设计见 [`.spec/knowledge/features/voxel.md`](../../.spec/knowledge/features/voxel.md) | 由 `eng/verify-wire.mjs` 做结构/码表/声明级用例 |
 | [`persistence-container-v1.json`](persistence-container-v1.json) | `lumio.persistence-container.v1` | 持久化容器层契约：检查点组 manifest、流水记录信封与哈希链、耐久回执、三档耐久档位 profile 与丢失边界、恢复固定顺序（ADR-070） | 由 `eng/verify-wire.mjs` 做结构/码表/声明级用例 |
+| [`container-delta-v1.json`](container-delta-v1.json) | `lumio.container-delta.v1` | SyncList / SyncDict 容器条目差量线上编码与状态载荷承载（ADR-071） | 由 `eng/verify-wire.mjs` 做结构/码表/声明级用例 |
 
 hello-wire 仍是 Hello World 消息形状、字段语义、进程边界与审计词表的唯一真值。消费方不得在实现仓另写一份协议真值。本目录契约是开发态最小契约，不是 Baseline；进入正式硬化阶段时再按治理顺序升级为版本化公共合同。
 

@@ -91,6 +91,7 @@
 | [ADR-068](ADR-068-development-verification-follow-main.md) | 开发期验证：五个依赖仓跟 main 不钉号、红当天修；CI 三作业每次都跑、无路径选择与 gate；验证规则只保留 `development-verification.md` 一套；否决评审 §8–§10 锁文件 / required-gate | Accepted |
 | [ADR-069](ADR-069-nativecore-audit-rulings.md) | NativeCore 审计复核 Owner 裁决：`lumio-hfsm` 为引擎唯一状态机迁移内核（须能编 wasm32）、NativeCore 未到 Release 不加检测工具、三仓 Rust 工具链统一 1.98.0、零消费者模块不删改为开放优先（能力目录 `native-core.md`） | Draft |
 | [ADR-070](ADR-070-persistence-container-ownership.md) | 持久化容器层契约与所有权分工：容器层归 Server、内容层归 Runtime、Journal 删后按契约重做、对齐 ADR-063 占段发号与 Sync 脏账 | Draft |
+| [ADR-071](ADR-071-container-delta-in-state-payload.md) | SyncList / SyncDict 容器条目差量线上编码与状态载荷承载（不走事件通道，`engine/wire/container-delta-v1.json`） | Draft |
 
 旧制度的 `DECISIONS_PENDING` 待决台账已随 `docs/` 一并删除（见 git 历史）；Living Architecture 下未定项直接落 ADR 或任务卡，不再另设台账。
 

@@ -1,0 +1,212 @@
+{
+  "contractId": "lumio.container-delta.v1",
+  "version": 1,
+  "purpose": "Authoritative state payload encoding specification for SyncList and SyncDict item-level deltas and full state snapshots within ECS WorldChange packets.",
+  "decisionRecord": "ADR-070",
+  "transport": {
+    "carrier": "WorldChange.fields in gameplay-command-envelope-v1",
+    "encoding": "utf8-json-text-frame or LumioBinV1 state payload",
+    "applicationPhase": "Same transaction with scalar fields, before Changed notification callbacks"
+  },
+  "roles": ["client", "server"],
+  "errorCodes": [
+    "bad_delta_envelope",
+    "exceeds_max_capacity",
+    "unfolded_duplicate_ops",
+    "mixed_delta_and_full",
+    "index_out_of_bounds",
+    "key_not_found",
+    "unsupported_operation",
+    "invalid_container_type"
+  ],
+  "containerTypes": {
+    "SyncList": {
+      "kind": "list",
+      "deltaOperations": ["set", "insert", "remove", "clear"],
+      "fullPayloadField": "fullEntries",
+      "indexType": "u32",
+      "semantics": "Ordered sequence of items indexed 0 to count - 1. Insert shifts items right, remove shifts items left."
+    },
+    "SyncDict": {
+      "kind": "dict",
+      "deltaOperations": ["set", "remove", "clear"],
+      "fullPayloadField": "fullEntries",
+      "keyType": "scalar-or-string",
+      "semantics": "Key-value dictionary. Set inserts or overwrites; remove drops entry."
+    }
+  },
+  "rules": [
+    {
+      "id": "bounded-container-capacity",
+      "statement": "Every container declaration and delta payload must specify maxCapacity (u32 > 0). Resulting container size must not exceed maxCapacity.",
+      "enforcedBy": "receiver",
+      "onViolation": "exceeds_max_capacity"
+    },
+    {
+      "id": "same-frame-folding",
+      "statement": "Multiple mutations to the same index/key within the same tick must be folded into at most one net operation. Redundant set operations must fold to the final value; addition followed by deletion cancels out.",
+      "enforcedBy": "receiver",
+      "onViolation": "unfolded_duplicate_ops"
+    },
+    {
+      "id": "isolated-mode-payload",
+      "statement": "A container field change payload must carry either delta operations or fullEntries, never both simultaneously.",
+      "enforcedBy": "receiver",
+      "onViolation": "mixed_delta_and_full"
+    },
+    {
+      "id": "full-snapshot-on-initial-or-resync",
+      "statement": "First visibility, enter AOI, or reconnection sends fullEntries without replaying mutation history.",
+      "enforcedBy": "receiver",
+      "onViolation": "bad_delta_envelope"
+    },
+    {
+      "id": "same-transaction-with-scalars",
+      "statement": "Container deltas and full snapshots apply atomically in the staging commit phase together with scalar field changes before item-level callbacks trigger.",
+      "enforcedBy": "receiver",
+      "onViolation": "bad_delta_envelope"
+    }
+  ],
+  "sharedTypes": {
+    "ListDeltaOp": {
+      "required": {
+        "op": "enum:listOps",
+        "index": "u32"
+      },
+      "optional": {
+        "value": "string"
+      }
+    },
+    "DictDeltaOp": {
+      "required": {
+        "op": "enum:dictOps",
+        "key": "string"
+      },
+      "optional": {
+        "value": "string"
+      }
+    },
+    "SyncListPayload": {
+      "required": {
+        "containerType": "const:SyncList",
+        "maxCapacity": "u32"
+      },
+      "optional": {
+        "deltas": "array:ListDeltaOp",
+        "fullEntries": "array:string"
+      }
+    },
+    "DictEntry": {
+      "required": {
+        "key": "string",
+        "value": "string"
+      },
+      "optional": {}
+    },
+    "SyncDictPayload": {
+      "required": {
+        "containerType": "const:SyncDict",
+        "maxCapacity": "u32"
+      },
+      "optional": {
+        "deltas": "array:DictDeltaOp",
+        "fullEntries": "array:DictEntry"
+      }
+    }
+  },
+  "enums": {
+    "listOps": ["set", "insert", "remove", "clear"],
+    "dictOps": ["set", "remove", "clear"]
+  },
+  "testCases": [
+    {
+      "name": "list/delta-set-single-item",
+      "container": "SyncList",
+      "payload": {
+        "containerType": "SyncList",
+        "maxCapacity": 100,
+        "deltas": [
+          { "op": "set", "index": 5, "value": "item_gold_sword" }
+        ]
+      },
+      "description": "Mutating slot 5 in a 100-slot backpack transmits only slot 5 delta."
+    },
+    {
+      "name": "list/full-entries-snapshot",
+      "container": "SyncList",
+      "payload": {
+        "containerType": "SyncList",
+        "maxCapacity": 100,
+        "fullEntries": ["item_wood_pickaxe", "item_bread", "item_torch"]
+      },
+      "description": "Enter AOI or reconnection sends full items array without historical delta replay."
+    },
+    {
+      "name": "dict/delta-set-and-remove",
+      "container": "SyncDict",
+      "payload": {
+        "containerType": "SyncDict",
+        "maxCapacity": 50,
+        "deltas": [
+          { "op": "set", "key": "weapon", "value": "bow_legendary" },
+          { "op": "remove", "key": "old_dagger" }
+        ]
+      },
+      "description": "SyncDict set new key and remove stale key folded within frame."
+    },
+    {
+      "name": "dict/full-entries-snapshot",
+      "container": "SyncDict",
+      "payload": {
+        "containerType": "SyncDict",
+        "maxCapacity": 50,
+        "fullEntries": [
+          { "key": "helmet", "value": "iron_helmet" },
+          { "key": "boots", "value": "leather_boots" }
+        ]
+      },
+      "description": "Full snapshot baseline for SyncDict entries."
+    }
+  ],
+  "invalidCases": [
+    {
+      "name": "capacity/exceeds-max-capacity",
+      "violates": "bounded-container-capacity",
+      "expectedRejection": "exceeds_max_capacity",
+      "validatorCheck": false,
+      "payload": {
+        "containerType": "SyncList",
+        "maxCapacity": 2,
+        "fullEntries": ["item1", "item2", "item3"]
+      }
+    },
+    {
+      "name": "folding/unfolded-duplicate-ops",
+      "violates": "same-frame-folding",
+      "expectedRejection": "unfolded_duplicate_ops",
+      "validatorCheck": false,
+      "payload": {
+        "containerType": "SyncList",
+        "maxCapacity": 100,
+        "deltas": [
+          { "op": "set", "index": 5, "value": "item_bronze" },
+          { "op": "set", "index": 5, "value": "item_gold" }
+        ]
+      }
+    },
+    {
+      "name": "mode/mixed-delta-and-full",
+      "violates": "isolated-mode-payload",
+      "expectedRejection": "mixed_delta_and_full",
+      "validatorCheck": false,
+      "payload": {
+        "containerType": "SyncList",
+        "maxCapacity": 100,
+        "deltas": [
+          { "op": "set", "index": 0, "value": "item_wood" }
+        ],
+        "fullEntries": ["item_stone"]
+      }
+    }
+  ]
+}
