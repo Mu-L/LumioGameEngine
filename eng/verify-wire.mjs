@@ -1130,6 +1130,7 @@ function checkGameplayEnvelopeContract(contract, fileName, problems) {
 // ADR-062 rev. 2026-09-06 (R-00479): every rule below must hang off its own error code, and
 // every one of these codes must be demonstrated by at least one invalidCase with real numbers.
 // Without this branch the contract can drift back into "rule text says A, onViolation says B".
+const VOXEL_CONTRACT_ID = 'lumio.voxel-world.v1';
 const VOXEL_RULE_ERROR_WIRING = [
   ['write.batch-is-all-or-nothing', 'write_batch_partially_applied'],
   ['write.batch-size-cap', 'write_batch_too_large'],
@@ -1199,8 +1200,169 @@ function checkVoxelRuleErrorWiring(contract, problem) {
   }
 }
 
-function checkVoxelPublicContract(contract, fileName, problems) {
-  if (contract.contractId !== 'lumio.voxel-world.v1') return;
+// ADR-062 rev. 2026-09-06 (R-00486): physicsQuery must declare its shape, its material-class
+// filter mask, and where the material-class table enters Native — and native-abi.json must carry
+// the same three declarations. Without this branch the contract can say "AABB inlined by value"
+// while the ABI still passes an opaque `shape` pointer whose layout nobody declared.
+const VOXEL_SHAPE_REQUIRED_CLAUSES = ['poseIsCenter', 'noRotation', 'inlineByValue', 'shapeSetIsClosed', 'degenerateShape'];
+const VOXEL_MASK_REQUIRED_CLAUSES = ['bitOrder', 'combining', 'zeroMatchesNothing', 'reservedBitsMustBeZero', 'appendOnly', 'notAnIdSegment'];
+const VOXEL_MATERIAL_TABLE_REQUIRED_CLAUSES = ['statement', 'source', 'whyNotARootSlot', 'whyNotAQueryParameter', 'resolvedBeforeQueryable', 'noBuiltInFallback', 'immutableWithinTick'];
+const VOXEL_PHYSICS_REQUEST_FIELDS = {
+  sweep_request: [['center', 'world_point'], ['half_extents', 'world_point'], ['displacement', 'world_point'], ['material_mask', 'u32']],
+  overlap_request: [['center', 'world_point'], ['half_extents', 'world_point'], ['material_mask', 'u32']],
+};
+const ABI_SCALAR_LAYOUT = { u8: 1, u16: 2, u32: 4, u64: 8, i32: 4, f32: 4 };
+
+function abiTypeLayout(typeName, types, seen = new Set()) {
+  if (ABI_SCALAR_LAYOUT[typeName]) return { size: ABI_SCALAR_LAYOUT[typeName], align: ABI_SCALAR_LAYOUT[typeName] };
+  const bytes = /^bytes(\d+)$/.exec(typeName);
+  if (bytes) return { size: Number(bytes[1]), align: 1 };
+  if (typeName === 'pointer') return { size: 8, align: 8 };
+  if (seen.has(typeName)) throw new Error(`recursive ABI type ${typeName}`);
+  const declared = types?.[typeName];
+  if (!Array.isArray(declared?.fields)) throw new Error(`unknown ABI type ${typeName}`);
+  return abiStructLayout(declared.fields, types, new Set(seen).add(typeName));
+}
+
+function abiStructLayout(fields, types, seen = new Set()) {
+  let offset = 0;
+  let align = 1;
+  const offsets = {};
+  for (const field of fields) {
+    const layout = abiTypeLayout(field.type, types, seen);
+    offset += (layout.align - (offset % layout.align)) % layout.align;
+    if (!field.name.startsWith('_')) offsets[field.name] = offset;
+    offset += layout.size;
+    align = Math.max(align, layout.align);
+  }
+  return { size: offset + ((align - (offset % align)) % align), align, offsets };
+}
+
+function checkVoxelPhysicsDeclarations(contract, abiDefinition, problem) {
+  const classes = contract.materialClasses?.v1Scope?.classes;
+  const nonEmpty = (value) => typeof value === 'string' && value.trim() !== '';
+
+  const shape = contract.physicsQuery?.shape;
+  if (!shape || shape.v1Shape !== 'Aabb') {
+    problem('physicsQuery.shape must declare the v1 shape as Aabb');
+  } else {
+    for (const key of ['center', 'halfExtents']) {
+      if (!nonEmpty(shape.fields?.[key])) problem(`physicsQuery.shape.fields.${key} must be declared`);
+    }
+    for (const clause of VOXEL_SHAPE_REQUIRED_CLAUSES) {
+      if (!nonEmpty(shape[clause])) problem(`physicsQuery.shape.${clause} must be declared`);
+    }
+  }
+  for (const [name, query] of Object.entries(contract.physicsQuery?.queries ?? {})) {
+    if (typeof query.input === 'string' && /形状与位姿|shape and pose/.test(query.input)) {
+      problem(`physicsQuery.queries.${name}.input must name the declared AABB fields, not an undeclared shape/pose pair`);
+    }
+  }
+
+  const mask = contract.physicsQuery?.filter?.materialMask;
+  if (!mask || mask.type !== 'u32') {
+    problem('physicsQuery.filter.materialMask must declare a u32 mask');
+  } else if (!Array.isArray(classes) || classes.length === 0) {
+    problem('materialClasses.v1Scope.classes must list the classes the mask assigns bits to');
+  } else {
+    if (JSON.stringify(Object.keys(mask.bits ?? {})) !== JSON.stringify(classes)) {
+      problem(`physicsQuery.filter.materialMask.bits must list exactly ${JSON.stringify(classes)} in declaration order`);
+    }
+    if (mask.assignedBitCount !== classes.length) {
+      problem(`physicsQuery.filter.materialMask.assignedBitCount must be ${classes.length}, got ${mask.assignedBitCount}`);
+    }
+    for (const [index, className] of classes.entries()) {
+      const bit = mask.bits?.[className];
+      if (bit !== index) problem(`physicsQuery.filter.materialMask.bits.${className} must be ${index} (LSB-first in declaration order), got ${bit}`);
+      if (mask.values?.[className] !== (1 << index)) {
+        problem(`physicsQuery.filter.materialMask.values.${className} must be ${1 << index}, got ${mask.values?.[className]}`);
+      }
+    }
+    for (const clause of VOXEL_MASK_REQUIRED_CLAUSES) {
+      if (!nonEmpty(mask[clause])) problem(`physicsQuery.filter.materialMask.${clause} must be declared`);
+    }
+    if (!String(mask.reservedBitsMustBeZero ?? '').includes('unknown_material_class')) {
+      problem('physicsQuery.filter.materialMask.reservedBitsMustBeZero must name unknown_material_class');
+    }
+    const assignedMask = classes.reduce((acc, _class, index) => acc | (1 << index), 0);
+    for (const [name, text] of Object.entries(contract.physicsQuery?.filter?.examples ?? {})) {
+      const example = /mask\s*=\s*(\d+)/.exec(String(text));
+      if (!example) {
+        problem(`physicsQuery.filter.examples.${name} must name the concrete mask value it uses`);
+      } else if (Number(example[1]) === 0 || (Number(example[1]) & ~assignedMask) !== 0) {
+        problem(`physicsQuery.filter.examples.${name} mask ${example[1]} sets no class or a reserved bit`);
+      }
+    }
+  }
+
+  const table = contract.physicsQuery?.materialClassTable;
+  if (!table) {
+    problem('physicsQuery.materialClassTable must declare where the material-class table enters Native');
+  } else {
+    if (!nonEmpty(table.nativeEntry)) problem('physicsQuery.materialClassTable.nativeEntry must be declared and non-empty');
+    for (const clause of VOXEL_MATERIAL_TABLE_REQUIRED_CLAUSES) {
+      if (!nonEmpty(table[clause])) problem(`physicsQuery.materialClassTable.${clause} must be declared`);
+    }
+    if (!String(table.source ?? '').includes('blockCatalog')) {
+      problem('physicsQuery.materialClassTable.source must point at the blockCatalog materialClass column');
+    }
+    if (!String(table.noBuiltInFallback ?? '').includes('unknown_material_class')) {
+      problem('physicsQuery.materialClassTable.noBuiltInFallback must name unknown_material_class');
+    }
+  }
+  for (const code of ['unknown_material_class']) {
+    if (!(contract.errorCodes ?? []).includes(code)) problem(`errorCodes must carry ${code} for the material-class filter`);
+  }
+
+  if (!abiDefinition) return;
+  const abiVoxel = abiDefinition.voxel ?? {};
+  const abiMask = abiVoxel.enums?.material_mask;
+  if (!abiMask || abiMask.type !== 'u32') {
+    problem('native-abi.json voxel.enums.material_mask must declare the u32 filter mask');
+  } else if (mask) {
+    if (JSON.stringify(abiMask.bits) !== JSON.stringify(mask.bits) || JSON.stringify(abiMask.values) !== JSON.stringify(mask.values)) {
+      problem('native-abi.json voxel.enums.material_mask bits/values must match physicsQuery.filter.materialMask');
+    }
+    if (abiMask.assignedBitCount !== mask.assignedBitCount) {
+      problem('native-abi.json voxel.enums.material_mask.assignedBitCount must match physicsQuery.filter.materialMask');
+    }
+    if (abiMask.unknownValueError !== 'unknown_material_class') {
+      problem('native-abi.json voxel.enums.material_mask.unknownValueError must be unknown_material_class');
+    }
+  }
+  const rootFieldNames = new Set((abiDefinition.root?.fields ?? []).map((field) => field.name));
+  if (table?.nativeEntry && rootFieldNames.has(table.nativeEntry)) {
+    problem(`physicsQuery.materialClassTable.nativeEntry must not be a root-table slot (${table.nativeEntry}); the catalog is world construction state`);
+  }
+  for (const [typeName, expected] of Object.entries(VOXEL_PHYSICS_REQUEST_FIELDS)) {
+    const declared = abiVoxel.types?.[typeName]?.fields;
+    if (!Array.isArray(declared)) {
+      problem(`native-abi.json voxel.types.${typeName} must declare fields`);
+      continue;
+    }
+    if (JSON.stringify(declared.map((field) => [field.name, field.type])) !== JSON.stringify(expected)) {
+      problem(`native-abi.json voxel.types.${typeName} must inline the AABB by value as ${JSON.stringify(expected)}, got ${JSON.stringify(declared.map((field) => [field.name, field.type]))}`);
+      continue;
+    }
+    if (declared.some((field) => field.type === 'pointer')) {
+      problem(`native-abi.json voxel.types.${typeName} must not carry a pointer field; physicsQuery.shape.inlineByValue forbids it`);
+    }
+    let computed;
+    try {
+      computed = abiStructLayout(declared, abiVoxel.types);
+    } catch (error) {
+      problem(`native-abi.json voxel.types.${typeName} layout is not computable: ${error.message}`);
+      continue;
+    }
+    const recorded = abiVoxel.layout?.types?.[typeName];
+    if (recorded?.size !== computed.size || JSON.stringify(recorded?.offsets) !== JSON.stringify(computed.offsets)) {
+      problem(`native-abi.json voxel.layout.types.${typeName} must be ${JSON.stringify({ size: computed.size, offsets: computed.offsets })}, got ${JSON.stringify(recorded)}`);
+    }
+  }
+}
+
+function checkVoxelPublicContract(contract, fileName, problems, abiDefinition) {
+  if (contract.contractId !== VOXEL_CONTRACT_ID) return;
   const problem = (msg) => problems.push(`${fileName}: ${msg}`);
   const occupancyCase = (contract.testCases ?? []).find((item) => item.name === 'entity_occupancy_placeholder');
   if (!occupancyCase?.then?.includes('BlockType=2')) {
@@ -1211,6 +1373,7 @@ function checkVoxelPublicContract(contract, fileName, problems) {
   }
 
   checkVoxelRuleErrorWiring(contract, problem);
+  checkVoxelPhysicsDeclarations(contract, abiDefinition, problem);
 
   const resolution = contract.blockId?.resolution;
   if (!resolution || resolution.reservedRange?.onAdmission !== 'unregistered_block_type') {
@@ -1272,7 +1435,7 @@ function validateContract(contract, fileName, abiDefinition) {
   const problems = [];
   const caseCount = checkStructure(contract, fileName, problems);
   checkGameplayEnvelopeContract(contract, fileName, problems);
-  checkVoxelPublicContract(contract, fileName, problems);
+  checkVoxelPublicContract(contract, fileName, problems, abiDefinition);
   checkNativeTimerContract(contract, fileName, problems);
   checkEntityBindingContract(contract, fileName, problems);
   if (abiDefinition) checkTimerAbiAlignment(contract, abiDefinition, problems, fileName);
@@ -1394,7 +1557,7 @@ async function main() {
     const { summary, problems } = validateContract(
       contract,
       fileName,
-      contract.contractId === TIMER_CONTRACT_ID ? abiDefinition : undefined,
+      contract.contractId === TIMER_CONTRACT_ID || contract.contractId === VOXEL_CONTRACT_ID ? abiDefinition : undefined,
     );
     console.log(summary);
     for (const problem of problems) console.log(`  - ${problem}`);
