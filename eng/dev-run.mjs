@@ -145,7 +145,7 @@ export async function runDevelopment({ root, verify = false, keepRunning = false
     report.native = native;
     report.dotnet = command('dotnet', ['--info'], { cwd: root, log: join(evidence, 'dotnet.log') });
     const serverOutput = command('cargo', ['build', '--locked', '--manifest-path', join(roots.LumioServer, 'Cargo.toml'),
-      '--bin', 'lumio-server', '--message-format=json-render-diagnostics', '--target-dir', join(root, '.build/server-target')],
+      '--bin', 'lumio-server', '--features', 'test-harness', '--message-format=json-render-diagnostics', '--target-dir', join(root, '.build/server-target')],
     { cwd: roots.LumioServer, log: join(evidence, 'server-build.log') });
     const artifacts = serverOutput.split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line));
     const serverExe = artifacts.findLast(row => row.reason === 'compiler-artifact' && row.target?.name === 'lumio-server' && row.executable)?.executable;

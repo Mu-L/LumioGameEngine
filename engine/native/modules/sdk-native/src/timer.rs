@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use lumio_timer::{
-    CallbackSlot, DispatchId, DispatchTarget, ScopeKind, SlotLifecycle, TimerError, TimerHandle,
-    TimerManager, TimerMode, TimerScope,
+    CallbackSlot, DispatchId, ScopeKind, SlotLifecycle, TimerError, TimerHandle, TimerManager,
+    TimerMode, TimerScope,
 };
 
 use crate::LumioStatus;
@@ -191,11 +191,15 @@ pub unsafe extern "C" fn timer_register_dispatch(manager: *mut c_void, dispatch_
         return LumioStatus::InvalidArgument as i32;
     }
     let id = DispatchId::from_raw(dispatch_id);
+    // Kernel `try_register_dispatch` is idempotent on a duplicate id; the ABI
+    // contract wants InvalidArgument for it, so keep the pre-check here.
     if mgr.kernel.is_dispatch_registered(id) {
         return LumioStatus::InvalidArgument as i32;
     }
-    mgr.kernel.register_dispatch(id, DispatchTarget::Registered);
-    LumioStatus::Success as i32
+    match mgr.kernel.try_register_dispatch(id) {
+        Ok(()) => LumioStatus::Success as i32,
+        Err(error) => map_timer_error(error),
+    }
 }
 
 /// # Safety
