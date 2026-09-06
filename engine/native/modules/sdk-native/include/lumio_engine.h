@@ -74,6 +74,8 @@ typedef uint32_t lumio_voxel_presence_t;
 #define VOXEL_ERROR_UNKNOWN_BEHAVIOR_TEMPLATE 1049
 #define VOXEL_ERROR_CELL_READ_MISSING_PRESENCE 1050
 #define VOXEL_ERROR_UNREGISTERED_BLOCK_TYPE 1051
+#define VOXEL_ERROR_WRITE_BATCH_PARTIALLY_APPLIED 1052
+#define VOXEL_ERROR_BASE_REVISION_ON_FULL_ENCODING 1053
 
 typedef uint32_t lumio_voxel_query_resolution_t;
 #define LUMIO_VOXEL_QUERY_HIT ((lumio_voxel_query_resolution_t)0u)
