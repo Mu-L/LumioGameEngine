@@ -179,8 +179,8 @@
   "voxel": {
     "contractId": "lumio.voxel-world.v1",
     "source": "engine/wire/voxel-world-v1.json",
-    "sourceSha256": "56d555fd8ab5a5da2e407bd78f499d0e04208fec267af94b4887f1152da7b0d7",
-    "sourceCounts": { "errors": 52, "rules": 57, "cases": 110 },
+    "sourceSha256": "d05dbc52896c535529937ec41d90539f41359a45b42cf05b6a589ef57609939d",
+    "sourceCounts": { "errors": 54, "rules": 60, "cases": 115 },
     "constants": {
       "blockId": {
         "type": "u32",
@@ -318,7 +318,9 @@
       "pinned_read_returned_pending",
       "unknown_behavior_template",
       "cell_read_missing_presence",
-      "unregistered_block_type"
+      "unregistered_block_type",
+      "write_batch_partially_applied",
+      "base_revision_on_full_encoding"
     ],
     "types": {
       "section_key": {
@@ -524,9 +526,9 @@
       "callerOwnedBuffers": true,
       "nativeAllocatesResults": false,
       "truncated": "Every batch read writes actual count and an explicit truncated flag; over-budget requests are rejected rather than truncated.",
-      "fullEncodingBaseSectionRevision": "Uniform, Palette, and Raw must not carry baseSectionRevision; reject as section_encoding_mismatch. No separate status is invented.",
-      "pinBudget": "The section budget is supplied by the caller for each pin declaration; this ABI invents no fixed pin budget.",
-      "rule49OnViolation": "Rule 49 remains its declared contract error and is not remapped to a generic transaction error."
+      "fullEncodingBaseSectionRevision": "Uniform, Palette, and Raw must not carry baseSectionRevision; reject the whole payload as base_revision_on_full_encoding (contract rule payload.full-encoding-carries-no-base-revision). The ABI invents no status of its own.",
+      "pinBudget": "The Section-count budget is supplied by the caller for each pin declaration and is the contract field residency.pinnedRegions.budget.residentSectionBudget; this ABI invents no fixed pin budget and never lowers the supplied one.",
+      "batchAtomicityVsSizeCap": "Batch atomicity and the entry cap are two distinct contract statuses and must not substitute for each other: a partially applied batch is write_batch_partially_applied (rule write.batch-is-all-or-nothing), an oversized batch is write_batch_too_large (rule write.batch-size-cap). Neither is remapped to a generic transaction error."
     }
   },
   "directAbiTests": [
