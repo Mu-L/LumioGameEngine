@@ -178,10 +178,6 @@ name = "lumio-clr-host"
 version = "0.1.0"
 
 [[package]]
-name = "lumio-contract-types"
-version = "0.0.0"
-
-[[package]]
 name = "lumio-core-composition"
 version = "0.1.0"
 dependencies = [
@@ -278,7 +274,6 @@ dependencies = [
 name = "lumio-kernel"
 version = "0.0.0"
 dependencies = [
- "lumio-contract-types",
  "lumio-platform",
 ]
 
