@@ -276,6 +276,9 @@ R-00433 的非目标清单是「光照传播、网格生成、流式加载、存
 
 ## 六、契约自身待裁决的缺陷（本次顺带发现，未改动）
 
+> **2026-09-06 更新（R-00479，Owner D11「现在修」）：第 1–4 条已修订，不再是待裁决项。** 本节正文保留 2026-09-04 当日的复核事实，不回写。修订内容与计数变化见 [`decisions/ADR-062-voxel-world-public-contract.md`](../decisions/ADR-062-voxel-world-public-contract.md) 的「修订记录（2026-09-06，R-00479 契约三处缺陷修订）」：新增 `write_batch_partially_applied` / `base_revision_on_full_encoding` 两个错误码与三条 rule，pin 预算落成 `residency.pinnedRegions.budget.residentSectionBudget`（量纲 = Section 数）。
+> 逐条落点：**第 1 条**——`write.batch-is-all-or-nothing` 改挂 `write_batch_partially_applied`，`blockWrite.batch.onExceeded` 补 rule `write.batch-size-cap` → `write_batch_too_large`。**第 2 条**——补 rule `payload.full-encoding-carries-no-base-revision` + 错误码 + invalidCase。**第 3 条**——补 `residentSectionBudget` 声明字段（宿主角色显式声明、不得缺省、不得被平台悄悄下调）。**第 4 条**——`write_batch_too_large` / `pin_region_not_ready` 各补一条 invalidCase；`block_catalog_row_incomplete` 经复核在本节写下之后已由 `block_type_without_material_class` 覆盖，本次未重复添加。**第 5 条未修**：voxel invalidCases 仍全部 `validatorCheck: false`，但 `eng/verify-wire.mjs` 已新增 voxel 专属断言分支，机器校验 rule ↔ errorCode ↔ invalidCase 接线与预算 / 上限两处数字的一致性。
+
 1. **rule 49 错位**：`write.batch-is-all-or-nothing` 文本讲「部分应用」，`onViolation` 挂 `write_batch_too_large`（尺寸错误）；契约无「批被部分应用」的错误码，而 `write_batch_too_large` 的语义出处 `blockWrite.batch.onExceeded` 没有对应 rule。
 2. **全量编码携带 `baseSectionRevision` 无码**：只有 `sectionPayload.envelope.conditional` 的散文，无 rule、无 errorCode。R-00436 验收 #4 因此无码可引。
 3. **pin 预算无常量**：`residency_pin_exceeds_budget` 依赖的「驻留预算」在 `limits` 与 `pinnedRegions` 里都没有字段，无机器可校验的界。

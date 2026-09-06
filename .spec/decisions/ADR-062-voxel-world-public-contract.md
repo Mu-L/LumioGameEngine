@@ -1,6 +1,6 @@
 # ADR-062：体素公共语义改从 `lumio.voxel-world.v1` 取——16³ 数据单元改名 Section，旧制度体素契约作废
 
-状态：Draft（2026-09-05，契约当前为 52 错误码 / 57 规则 / 110 场景用例；R-00434 的解析域与目录校验增量见 [ADR-066](ADR-066-voxel-owner-rulings.md)，随 M1/M2 实现验证后转 Accepted）
+状态：Draft（2026-09-06，契约当前为 54 错误码 / 60 规则 / 115 场景用例，见文末 R-00479 修订记录；R-00434 的解析域与目录校验增量见 [ADR-066](ADR-066-voxel-owner-rulings.md)，随 M1/M2 实现验证后转 Accepted）
 取代：作废 [ADR-024](ADR-024-voxel-p0-contract-set.md)、[ADR-035](ADR-035-voxel-snapshot-payload.md)、[ADR-036](ADR-036-voxel-streaming-durability-ack.md) 中「Chunk 是 16³ 数据单元」的分层语义与其 `schemas/` 依赖；三者的事务、Pin 栅栏、耐久回执与 canonical 排序等**技术结论**仍可被引用，但其 Schema/Fixture 链已随旧制度删除，不再是可校验真值
 Owner：`LumioGameEngine`（契约与裁决真值）、`LumioVoxelEngine`（唯一实现）、`LumioGameRuntime` / `LumioGame` / `LumioClient`（消费方）
 
@@ -57,7 +57,7 @@ Owner：`LumioGameEngine`（契约与裁决真值）、`LumioVoxelEngine`（唯�
 
 ## 失败语义
 
-契约现有 52 个稳定错误码（包括新增 `unregistered_block_type`；`unknown_section_key` / `unknown_chunk_key` / `delta_base_revision_mismatch` / `delta_used_for_first_delivery` / `lighting_in_payload` / `dirty_section_not_durable` / `block_type_scope_violation` / `room_local_type_without_mapping` / `player_type_declares_behavior` / `palette_reclaim_before_escalation` / `dead_palette_entry_in_payload` / `business_data_in_payload` / `binding_commit_split` 等）。三条红线级失败：**把 `Pending`/`Unavailable`/`Unresolved` 物化成空气**、**携带光照或业务字段入载荷**、**未经回执覆盖卸载脏 Section**。
+契约现有 54 个稳定错误码（包括 `unregistered_block_type` 与 R-00479 追加的 `write_batch_partially_applied` / `base_revision_on_full_encoding`；`unknown_section_key` / `unknown_chunk_key` / `delta_base_revision_mismatch` / `delta_used_for_first_delivery` / `lighting_in_payload` / `dirty_section_not_durable` / `block_type_scope_violation` / `room_local_type_without_mapping` / `player_type_declares_behavior` / `palette_reclaim_before_escalation` / `dead_palette_entry_in_payload` / `business_data_in_payload` / `binding_commit_split` 等）。三条红线级失败：**把 `Pending`/`Unavailable`/`Unresolved` 物化成空气**、**携带光照或业务字段入载荷**、**未经回执覆盖卸载脏 Section**。
 
 ## 兼容影响与迁移
 
@@ -68,4 +68,17 @@ Owner：`LumioGameEngine`（契约与裁决真值）、`LumioVoxelEngine`（唯�
 
 ## 验证
 
-`node eng/verify-wire.mjs` 覆盖 7 份契约；`voxel-world-v1.json` 现有 110 条顶层声明场景（53 testCases + 57 invalidCases），并额外执行 ADR-066 的 resolver / row-validation vectors。`node .spec/tools/spec-lint.mjs` 校验本 ADR 的登记与链接可达。实现侧的一致性由 `LumioVoxelEngine` 解析同一份 JSON 逐条断言常量，并校验其 SHA-256 与仓内 `CONTRACT_SHA256` 相符。
+`node eng/verify-wire.mjs` 覆盖 7 份契约；`voxel-world-v1.json` 现有 115 条顶层声明场景（53 testCases + 62 invalidCases），并额外执行 ADR-066 的 resolver / row-validation vectors 与 R-00479 的 rule↔errorCode↔invalidCase 接线断言。`node .spec/tools/spec-lint.mjs` 校验本 ADR 的登记与链接可达。实现侧的一致性由 `LumioVoxelEngine` 解析同一份 JSON 逐条断言常量，并校验其 SHA-256 与仓内 `CONTRACT_SHA256` 相符。
+
+## 修订记录（2026-09-06，R-00479 契约三处缺陷修订）
+
+本段为附录，不改写上方决策原文。依据 [`reviews/2026-09-04-voxel-card-contract-drift.md`](../reviews/2026-09-04-voxel-card-contract-drift.md) §六 第 1–4 条与 [`reviews/2026-09-05-engine-repos-progress-assessment.md`](../reviews/2026-09-05-engine-repos-progress-assessment.md) §6 **D11**（Owner 2026-09-06「现在修」）。真值仍是 `engine/wire/voxel-world-v1.json`，`errorCodes` **只在末尾追加**，既有 id、顺序与数值映射（base 1000，`unknown_section_key` = 1000 … `unregistered_block_type` = 1051）一个未动。
+
+- **① 批写入的原子性与尺寸上限拆成两个错误码。** `write.batch-is-all-or-nothing` 的 `onViolation` 由 `write_batch_too_large`（尺寸）改挂新增的 **`write_batch_partially_applied`**（原子性）；`blockWrite.batch.onExceeded` 补上对应 rule **`write.batch-size-cap`**，`onViolation` = `write_batch_too_large`。两个码不得互相顶替。
+- **② 全量编码携带 `baseSectionRevision` 有码可引。** 新增 rule **`payload.full-encoding-carries-no-base-revision`** 与错误码 **`base_revision_on_full_encoding`**：`Uniform` / `Palette` / `Raw` 是整体替换，没有基线可对，携带即整条载荷拒收——不得按 Delta 解释，也不得忽略该字段照常接收。原先只有 `sectionPayload.envelope.conditional` 的散文，实现方只能自拟拒绝码。
+- **③ pin 驻留预算有了声明字段。** `residency.pinnedRegions.budget` 新增 **`residentSectionBudget`**：量纲 = **Section 数**，由**宿主角色显式声明**，**不得缺省**（未声明按 0 处理，任何 pin 都超预算），**不得被平台在运行时悄悄下调**，专用服务器与浏览器客户端各自声明、永不共用一个数字。配套 rule `residency.pin-budget-is-declared`（复用 `residency_pin_exceeds_budget`，不新增码）。ABI 面由 `residency_pin_declare` 的调用方参数携带该数字，`native-abi.json` 不自造预算。
+- **④ 错误码用例覆盖补齐。** `write_batch_too_large`（`entryCount = 65537` > 65536）、`pin_region_not_ready`、`residency_pin_exceeds_budget`（预算 256 Section / 请求 400 Section）与两个新增码各补 invalidCase；`block_catalog_row_incomplete` 原已由 `block_type_without_material_class` 覆盖，本次未重复添加。`eng/verify-wire.mjs` 新增 voxel 专属断言，机器校验 rule ↔ errorCode ↔ invalidCase 的接线、`blockWrite.batch.maxEntriesPerBatch` 与 `limits.maxEntriesPerWriteBatch` 一致、以及预算字段的量纲 / 无缺省 / 不得悄悄下调三条。
+
+**计数变化**：错误码 52 → **54**（追加 `write_batch_partially_applied` = 1052、`base_revision_on_full_encoding` = 1053）；rules 57 → **60**（追加 `write.batch-size-cap`、`payload.full-encoding-carries-no-base-revision`、`residency.pin-budget-is-declared`）；场景用例 110 → **115**（testCases 53 不变，invalidCases 57 → 62）。ABI 生成物随源经 `node eng/generate-abi.mjs` 重生成，三种绑定只在错误常量表末尾各追加两行。
+
+**未在本次修订内**：`LumioVoxelEngine` 的 `crates/lumio-voxel-contracts/wire/` 副本、`CONTRACT_SHA256` 与 `voxel_world.rs` 常量同步走单独 PR（本卡验收 7），顺序仍是「架构仓改 JSON → 递增本 ADR → 实现仓复制副本 → 更新常量与摘要 → 一致性测试变绿」。本契约当前 SHA-256 = `d05dbc52896c535529937ec41d90539f41359a45b42cf05b6a589ef57609939d`。

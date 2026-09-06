@@ -1076,6 +1076,78 @@ function checkGameplayEnvelopeContract(contract, fileName, problems) {
   }
 }
 
+// ADR-062 rev. 2026-09-06 (R-00479): every rule below must hang off its own error code, and
+// every one of these codes must be demonstrated by at least one invalidCase with real numbers.
+// Without this branch the contract can drift back into "rule text says A, onViolation says B".
+const VOXEL_RULE_ERROR_WIRING = [
+  ['write.batch-is-all-or-nothing', 'write_batch_partially_applied'],
+  ['write.batch-size-cap', 'write_batch_too_large'],
+  ['payload.full-encoding-carries-no-base-revision', 'base_revision_on_full_encoding'],
+  ['residency.pin-budget-is-hard', 'residency_pin_exceeds_budget'],
+  ['residency.pin-budget-is-declared', 'residency_pin_exceeds_budget'],
+  ['residency.pin-ready-before-gameplay', 'pin_region_not_ready'],
+  ['catalog.row-must-be-complete', 'block_catalog_row_incomplete'],
+];
+const VOXEL_FULL_ENCODINGS = ['Uniform', 'Palette', 'Raw'];
+
+function checkVoxelRuleErrorWiring(contract, problem) {
+  const ruleById = new Map((contract.rules ?? []).map((rule) => [rule.id, rule]));
+  const casesByCode = new Map();
+  for (const item of contract.invalidCases ?? []) {
+    if (!casesByCode.has(item.expectedRejection)) casesByCode.set(item.expectedRejection, []);
+    casesByCode.get(item.expectedRejection).push(item);
+  }
+  for (const [ruleId, code] of VOXEL_RULE_ERROR_WIRING) {
+    const rule = ruleById.get(ruleId);
+    if (!rule) {
+      problem(`rules must declare ${ruleId}`);
+      continue;
+    }
+    if (rule.onViolation !== code) {
+      problem(`rules.${ruleId}.onViolation must be ${code}, got ${rule.onViolation}`);
+    }
+    if (!(casesByCode.get(code)?.length > 0)) {
+      problem(`errorCodes.${code} must be demonstrated by at least one invalidCase`);
+    }
+  }
+
+  const conditional = contract.sectionPayload?.envelope?.conditional?.baseSectionRevision;
+  if (typeof conditional !== 'string' || !conditional.includes('base_revision_on_full_encoding')) {
+    problem('sectionPayload.envelope.conditional.baseSectionRevision must name base_revision_on_full_encoding');
+  }
+  const baseRevisionCase = (casesByCode.get('base_revision_on_full_encoding') ?? [])
+    .find((item) => VOXEL_FULL_ENCODINGS.includes(item.encoding));
+  if (!baseRevisionCase || typeof baseRevisionCase.baseSectionRevision !== 'number') {
+    problem('base_revision_on_full_encoding needs an invalidCase naming a full encoding and the carried baseSectionRevision');
+  }
+
+  const batch = contract.blockWrite?.batch ?? {};
+  if (batch.maxEntriesPerBatch !== contract.limits?.maxEntriesPerWriteBatch) {
+    problem('blockWrite.batch.maxEntriesPerBatch must equal limits.maxEntriesPerWriteBatch');
+  }
+  const overCapCase = (casesByCode.get('write_batch_too_large') ?? [])
+    .find((item) => typeof item.entryCount === 'number');
+  if (!overCapCase || !(overCapCase.entryCount > batch.maxEntriesPerBatch)) {
+    problem('write_batch_too_large needs an invalidCase whose entryCount exceeds blockWrite.batch.maxEntriesPerBatch');
+  }
+
+  const budget = contract.residency?.pinnedRegions?.budget;
+  if (budget?.field !== 'residentSectionBudget'
+    || budget?.unit !== 'Section'
+    || budget?.declaredBy !== 'host-role'
+    || budget?.required !== true
+    || budget?.default !== undefined
+    || typeof budget?.noDefault !== 'string'
+    || typeof budget?.notSilentlyLowered !== 'string') {
+    problem('residency.pinnedRegions.budget must declare residentSectionBudget in Section units, host-declared, required, with no default and an explicit no-silent-lowering clause');
+  }
+  const pinBudgetCase = (casesByCode.get('residency_pin_exceeds_budget') ?? [])
+    .find((item) => typeof item.residentSectionBudget === 'number' && typeof item.requestedSections === 'number');
+  if (!pinBudgetCase || !(pinBudgetCase.requestedSections > pinBudgetCase.residentSectionBudget)) {
+    problem('residency_pin_exceeds_budget needs an invalidCase with a declared residentSectionBudget and a strictly larger requestedSections');
+  }
+}
+
 function checkVoxelPublicContract(contract, fileName, problems) {
   if (contract.contractId !== 'lumio.voxel-world.v1') return;
   const problem = (msg) => problems.push(`${fileName}: ${msg}`);
@@ -1086,6 +1158,9 @@ function checkVoxelPublicContract(contract, fileName, problems) {
   if (occupancyCase?.then?.includes('BlockType=3')) {
     problem('testCases.entity_occupancy_placeholder must not use BlockType=3 for ECS occupancy');
   }
+
+  checkVoxelRuleErrorWiring(contract, problem);
+
   const resolution = contract.blockId?.resolution;
   if (!resolution || resolution.reservedRange?.onAdmission !== 'unregistered_block_type') {
     problem('blockId.resolution must declare the reserved/non-resolvable admission error');
