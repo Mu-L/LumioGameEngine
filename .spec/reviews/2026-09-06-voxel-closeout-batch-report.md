@@ -10,7 +10,7 @@ metadata:
 
 Owner 2026-09-06 授权的五件事全部执行完毕。本报告记录改动清单、每卡验证证据、known gaps 与沉淀落点。
 
-**总量**：21 张卡流转「已完成」，**139 条验收项通过 / 2 条阻塞 / 0 条不通过**；两仓合计合入 12 个 PR。批次中途新开 7 张卡（2 张为解阻塞、5 张为遗留项归档）。
+**总量**：22 张卡流转「已完成」，**146 条验收项通过 / 2 条阻塞 / 0 条不通过**；两仓合计合入 14 个 PR。批次中途新开 8 张卡（2 张为解阻塞、6 张为遗留项与新查出缺口的归档）。
 
 ---
 
@@ -22,15 +22,16 @@ Owner 2026-09-06 授权的五件事全部执行完毕。本报告记录改动清
 | ② | V-QA 93 条验收项逐条实跑 | ✅ 88 通过 / 5 不通过 / 0 阻塞；5 条不通过全部修复并收口 |
 | ③ | R-00474 退出旧合同制三层清理 | ✅ 10/10 通过，已完成。VoxelEngine `f7d28f3`，净删约 17,800 行 |
 | ④ | R-00476 sdk-native 去 V1.4 名字 | ⚠️ 3 通过 / 2 阻塞（均为宿主依赖，见 §四），已合入 `dd48fda` |
-| ⑤ | R-00477 根表物理三槽路由 | ⏸ 见 §三「两次停卡」 |
+| ⑤ | R-00477 根表物理三槽路由 | ✅ 7/7 通过，已完成。架构仓 `96cb2dd`（先经一次停卡→开前置卡 R-00486→前置解除后一次做完） |
 
-### 中途新开的 7 张卡
+### 中途新开的 8 张卡
 
 | 卡 | 为什么开 |
 |---|---|
 | R-00486 | R-00477 停卡回报的三处契约硬缺口，Owner 指示回唯一真值处补全。**已完成 7/7** |
 | R-00487 | R-00448 验收 5 改判为静态守卫落地。**已完成 5/5** |
 | R-00488 ~ R-00492 | 五张遗留项归档卡，backlog 未派活，见 §五 |
+| R-00494 | R-00477 深审转出的 physicsQuery 契约收尾（**退化盒的两种禁止行为都可达**），backlog |
 
 ---
 
@@ -48,6 +49,7 @@ Owner 2026-09-06 授权的五件事全部执行完毕。本报告记录改动清
 | `dd48fda` | R-00476 | `sdk-native/voxel.rs` 只用活契约面类型；`approved_snapshot()` 删死基线三件套 |
 | `b947e8f` | — | `spec-lint` 不再把宿主托管的 worktree 扫成第二套框架（见 §六） |
 | `23401e1` | R-00486 | `physicsQuery` 补三处声明：形状按值内联、材质掩码位分配、材质类表 Native 入口 |
+| `96cb2dd` | R-00477 | 根表物理三槽接线到上游 `physics_query`；`VoxelFacade` 补三入口；**修掉一处跨 FFI 搬运未初始化填充字节的确定性缺陷** |
 
 ### LumioVoxelEngine
 
@@ -58,6 +60,8 @@ Owner 2026-09-06 授权的五件事全部执行完毕。本报告记录改动清
 | `6d386a6` | R-00436 / R-00452 | 全量编码与过期回执按契约报自己的错码；CI 护栏加固 |
 | `d5efaf5` | R-00487 | 碰撞行为硬编码的静态守卫 |
 | `0f41e8b` | R-00486 ⑦ | 契约副本同步至 `523aec6e…` |
+
+> 契约 SHA 演进：`56d555fd…`（批次开始）→ `d05dbc52…`（R-00479）→ `523aec6e…`（R-00486）。`DEFINITION_SHA256`：`cd7ec9d9…` → `fd76885a…`（R-00486 后不再变，R-00477 逐字节未动 ABI）。
 
 ---
 
@@ -92,6 +96,28 @@ git grep -l 'fn ' -- 'crates/*/src/*'  → 84 个文件
 
 R-00479 追加两个错误码后，两处手写镜像（`voxel.rs::status_for_error` 52 个 match 臂、`VoxelFacade.cs` 的 `VoxelError` 52 个枚举）未同步。深审记为 P2「今天零影响，无 producer 产出这两个字符串」——**该定级有误**：它只查了产出方，没查消费方的穷尽性，而 V-QA 随即证明它打挂了 R-00445 验收 3 与 R-00456 验收 5。已修复并在两侧各加穷尽性断言（以 `native-abi.json` 的 `voxel.errorCodes` 为唯一真值），下次契约追加错误码而漏改镜像必然变红。
 
+
+### 一条只有反例探针才看得见的缺陷 · R-00477
+
+`(*out).hit_cell = cell;` 这类**整体结构赋值**会把 `world_coordinate` 里 `y` 之后的**未初始化填充字节**一起搬过 FFI 边界，两次调用因此可能字节不同——直接违反验收 5「逐字节相同」。
+
+原确定性测试是「两个 `default()` 比较」，填充碰巧都是 0 就过了，**绿门永远看不见**。实现方是在做「Unresolved 塌缩」探针时意外撞出来的。
+
+修法：三处改为逐标量落笔；确定性测试升级为**两次调用各从不同毒化字节（0x00 / 0xFF）出发**——只有每个字节含填充都被确定性写满才可能相等。审查方用真实编译器（`cc -O0` + `offsetof`/`sizeof`）复核完备性：整个 ABI 写出面**隐式填充只有这一处**，出现在三个位置，三处全部已改；其余整体赋值的类型均无隐式填充。
+
+**这条值得单记**：凡是跨 ABI 写含内部填充的 `repr(C)` 结构都会踩，而且任何绿门都照不出来。
+
+### R-00477 深审把契约缺口查得比实现方更糟
+
+`degenerateShape` 契约同时说「由调用方保证」与「体素侧不得静默当成一个点、也不得静默当成 Miss」，而 54 条错误码里没有对应码。实现方报的是「上游对 `halfExtents=0` 返回 `Ok(None)` → 静默 Miss」。审查方实测发现**另一半也成立**：
+
+| `halfExtents=0` 时 center 的位置 | 实际结局 | 契约条款 |
+|---|---|---|
+| 落整数格边界 | `res=Miss` | 明令「不得静默当成 Miss」 |
+| 落格心 | **`res=Hit actual=1`** | 明令「不得静默当成一个点」 |
+
+**同一个退化请求因几何位置被分类成两种不同结局，两种都是契约明令禁止的。** 已落 R-00494，卡面写明「只堵一半会漏掉另一半」。
+
 ---
 
 ## 四、验证证据摘要
@@ -99,13 +125,14 @@ R-00479 追加两个错误码后，两处手写镜像（`voxel.rs::status_for_er
 ### 收口门槛（两仓最终状态）
 
 ```
-架构仓 origin/main = 23401e1
+架构仓 origin/main = 96cb2dd
   node eng/generate-abi.mjs（连跑两次）→ DEFINITION_SHA256=fd76885a…，第二次后 git status 全空（幂等）
-  node eng/verify-wire.mjs             → 7 份契约全绿，voxel 115/115 clean passes
+  node eng/verify-wire.mjs             → 7 份契约全绿，voxel 115/115 clean passes；内嵌 34 tests 全过
   node --test eng/generate-abi.test.mjs → 19/19
   node .spec/tools/spec-lint.mjs       → OK
-  cargo build/test -p lumio-engine-native → 3 + 14 passed
-  dotnet test …NativeLoader.Tests      → Passed! Failed: 0, Passed: 20
+  cargo build/test -p lumio-engine-native → lib 4 + root_api 22 passed（批次开始时 3 + 14）
+  dotnet test …NativeLoader.Tests      → Passed! Failed: 0, Passed: 23（批次开始时 20）
+  sdk-native 自身 clippy 诊断条数        → 0
 
 LumioVoxelEngine origin/main = 0f41e8b
   cargo fmt / clippy -D warnings / check --no-default-features → 全 exit 0
@@ -114,7 +141,7 @@ LumioVoxelEngine origin/main = 0f41e8b
   spec-lint + spec-lint.test → OK / 13 pass
 ```
 
-契约 SHA 演进：`56d555fd…`（批次开始）→ `d05dbc52…`（R-00479）→ `523aec6e…`（R-00486）。两仓副本每一步都经 `cmp` 逐字节核对。
+契约 SHA 演进：`56d555fd…`（批次开始）→ `d05dbc52…`（R-00479）→ `523aec6e…`（R-00486）。两仓副本每一步都经 `cmp` 逐字节核对。`DEFINITION_SHA256`：`cd7ec9d9…` → `fd76885a…`（R-00486 后不再变——R-00477 接线三槽但 ABI 逐字节未动）。
 
 ### 反例探针总账
 
@@ -129,6 +156,7 @@ LumioVoxelEngine origin/main = 0f41e8b
 | R-00452 深审 | 双向 | golden 哈希双向探针**都红在两腿比对而非哈希断言**——假独立会让前者恒绿 |
 | R-00487 快审 | 15 组 + 4 道自检破坏 | 十一种自然拼法全红；唯一真漏是刻意规避 |
 | R-00486 深审 | 9 条 + 控制 | 用**真实编译器** `cc` + `offsetof` 复核结构体布局，另用独立实现重算全部结构体 mismatches: 0 |
+| R-00477 深审 | 8 条 + 控制 + 8 条自加 | 毒化探针证明确定性测试真能抓住填充字节回归；退化盒四种形态逐一实测 |
 
 ---
 
@@ -143,7 +171,7 @@ LumioVoxelEngine origin/main = 0f41e8b
 
 **两条都需要在 Linux / Windows 宿主复跑一次才算收口门槛完整过。** 全批次涉及 dev-run 的证据一律标 blocked，未有一处写成 passed。
 
-### 已归档为卡的遗留项（5 张，backlog 未派活）
+### 已归档为卡的遗留项（6 张，backlog 未派活）
 
 | 卡 | 优先级 | 仓 | 内容 |
 |---|---|---|---|
@@ -152,11 +180,12 @@ LumioVoxelEngine origin/main = 0f41e8b
 | **R-00490** | **P1** | VoxelEngine | **材质类表是碰撞的唯一真值**：`MaterialProfile::collision()` 零生产调用点、`MaterialClass` 枚举定义两处（违反契约 `materialClasses.singleTable`）、四个内置哨兵只认了 air |
 | **R-00491** | **P1** | 架构仓 | **架构仓自己还留着 `LGE-V1.4` 生成树**与内嵌 schema 副本；R-00474 在 VoxelEngine 清完了，这边没清 |
 | R-00492 | P2 | VoxelEngine | 守卫扫描面语义锚点；差分 `partial` 探针误名；活代码 37 处 `generated` 措辞 |
+| **R-00494** | **P1** | 架构仓 | **physicsQuery 契约收尾**：退化盒无码且两种禁止行为都可达；sweep Miss 的 `travel_fraction`、物理查询取数面、错误码映射、`nonVoxelBodies` 四处语义未进契约 |
 
-### 未归档、待 Owner 裁决
+### 未归档、仅记录
 
-- **`degenerateShape` 只禁不立**（R-00486 引入）：契约同时说「由调用方保证」（前置条件）与「体素侧不得静默当成 Miss」（被调方必须检测），两句互相拉扯，而 54 条 `errorCodes` 里没有对应退化形状的码。这正是本批次要根治的失败模式在新声明里重演了一次。
-- **三条新语义是纯声明**（`zeroMatchesNothing` / `reservedBitsMustBeZero` / `degenerateShape`），无 `rules` + `invalidCase` 支撑，R-00479 立的那道机器闸门覆盖不到它们。
+- **三条新语义是纯声明**（`zeroMatchesNothing` / `reservedBitsMustBeZero` / `degenerateShape`），无 `rules` + `invalidCase` 支撑，R-00479 立的那道机器闸门覆盖不到它们。前两条 R-00477 在本仓自建了机器对账（`voxel::tests::material_mask_bits_match_the_contract_declaration`），但那是替代闸门、不等于契约级闸门。第三条已随 R-00494 转出。
+- **`with_material_classes` 全仓无非测试调用方**：真实宿主若不经 Rust 侧构造 provider，所有物理查询一律拒答。这是 `NativeVoxelProvider` 只在测试中可达这一既有结构性缺口的延伸，非本批次引入，但从 R-00477 起变成承重项。
 
 ---
 
