@@ -53,6 +53,71 @@ public readonly record struct VoxelWriteReceipt(
     ulong UpToSectionRevision,
     ulong WorldRevision);
 
+/// <summary>
+/// 物理查询的三种结局。Unresolved（路径上有 Section 尚未就位）是正常结局，不是错误码，
+/// 也不得被折叠成 Miss（穿过去）或 Hit（挡住）——所以它是一个显式枚举，不是布尔。
+/// </summary>
+public enum VoxelQueryResolution
+{
+    Hit = 0,
+    Miss = 1,
+    Unresolved = 2,
+}
+
+/// <summary>世界空间的连续点 / 向量。</summary>
+public readonly record struct VoxelWorldPoint(float X, float Y, float Z);
+
+public readonly record struct VoxelRaycastRequest(
+    VoxelWorldPoint Origin,
+    VoxelWorldPoint Direction,
+    float MaxDistance,
+    uint MaterialMask);
+
+public readonly record struct VoxelRaycastResult(
+    VoxelQueryResolution Resolution,
+    VoxelSectionKey UnresolvedSection,
+    VoxelWorldCoordinate HitCell,
+    uint BlockId,
+    VoxelWorldPoint HitPoint,
+    VoxelWorldPoint HitNormal,
+    float TravelDistance);
+
+/// <summary>
+/// v1 的扫掠形状只有世界空间轴对齐盒，按值内联：<c>Center</c> 就是位姿，没有旋转和缩放。
+/// </summary>
+public readonly record struct VoxelSweepRequest(
+    VoxelWorldPoint Center,
+    VoxelWorldPoint HalfExtents,
+    VoxelWorldPoint Displacement,
+    uint MaterialMask);
+
+public readonly record struct VoxelSweepResult(
+    VoxelQueryResolution Resolution,
+    bool Collided,
+    float TravelFraction,
+    VoxelSectionKey UnresolvedSection,
+    VoxelWorldCoordinate HitCell,
+    uint BlockId,
+    VoxelWorldPoint HitPoint,
+    VoxelWorldPoint HitNormal);
+
+public readonly record struct VoxelOverlapRequest(
+    VoxelWorldPoint Center,
+    VoxelWorldPoint HalfExtents,
+    uint MaterialMask);
+
+public readonly record struct VoxelOverlapHit(VoxelWorldCoordinate Cell, uint BlockId);
+
+/// <summary>
+/// 重叠检测的元数据。条目本身留在调用方缓冲里；<c>ActualCount</c> 是完整匹配总数，
+/// <c>Truncated</c> 显式回报容量不足，Native 不返回任何需要释放的句柄。
+/// </summary>
+public readonly record struct VoxelOverlapResult(
+    VoxelQueryResolution Resolution,
+    VoxelSectionKey UnresolvedSection,
+    uint ActualCount,
+    bool Truncated);
+
 public enum VoxelErrorCode
 {
     Unknown = -1,
@@ -622,6 +687,120 @@ public sealed class NativeVoxelWorld
         }
     }
 
+    /// <summary>沿射线逐格步进；结果三态由 <see cref="VoxelRaycastResult.Resolution"/> 显式表达。</summary>
+    public VoxelRaycastResult Raycast(VoxelRaycastRequest request)
+    {
+        _lease.ThrowIfDisposed();
+        var requestPtr = Marshal.AllocHGlobal(Marshal.SizeOf<Native.VoxelRaycastRequest>());
+        var resultPtr = Marshal.AllocHGlobal(Marshal.SizeOf<Native.VoxelRaycastResult>());
+        try
+        {
+            Marshal.StructureToPtr(
+                new Native.VoxelRaycastRequest
+                {
+                    Origin = ToNative(request.Origin),
+                    Direction = ToNative(request.Direction),
+                    MaxDistance = request.MaxDistance,
+                    MaterialMask = request.MaterialMask,
+                },
+                requestPtr,
+                false);
+            var raycast = GetDelegate<VoxelRaycastFn>(_api.Raycast, nameof(_api.Raycast));
+            ThrowIfFailed(raycast(_world, requestPtr, resultPtr), nameof(Raycast));
+            return ToPublic(Marshal.PtrToStructure<Native.VoxelRaycastResult>(resultPtr));
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(requestPtr);
+            Marshal.FreeHGlobal(resultPtr);
+        }
+    }
+
+    /// <summary>扫掠一个轴对齐盒；只回答会不会撞、撞在哪，怎么响应由调用方决定。</summary>
+    public VoxelSweepResult Sweep(VoxelSweepRequest request)
+    {
+        _lease.ThrowIfDisposed();
+        var requestPtr = Marshal.AllocHGlobal(Marshal.SizeOf<Native.VoxelSweepRequest>());
+        var resultPtr = Marshal.AllocHGlobal(Marshal.SizeOf<Native.VoxelSweepResult>());
+        try
+        {
+            Marshal.StructureToPtr(
+                new Native.VoxelSweepRequest
+                {
+                    Center = ToNative(request.Center),
+                    HalfExtents = ToNative(request.HalfExtents),
+                    Displacement = ToNative(request.Displacement),
+                    MaterialMask = request.MaterialMask,
+                },
+                requestPtr,
+                false);
+            var sweep = GetDelegate<VoxelSweepFn>(_api.Sweep, nameof(_api.Sweep));
+            ThrowIfFailed(sweep(_world, requestPtr, resultPtr), nameof(Sweep));
+            return ToPublic(Marshal.PtrToStructure<Native.VoxelSweepResult>(resultPtr));
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(requestPtr);
+            Marshal.FreeHGlobal(resultPtr);
+        }
+    }
+
+    public VoxelOverlapResult Overlap(VoxelOverlapRequest request, VoxelOverlapHit[] hits)
+    {
+        ArgumentNullException.ThrowIfNull(hits);
+        return Overlap(request, hits.AsSpan());
+    }
+
+    /// <summary>
+    /// 重叠检测：命中条目写进调用方提供的缓冲，容量不足时结果里回报 Truncated 与实际总数。
+    /// </summary>
+    public VoxelOverlapResult Overlap(VoxelOverlapRequest request, Span<VoxelOverlapHit> hits)
+    {
+        _lease.ThrowIfDisposed();
+        var hitSize = Marshal.SizeOf<Native.VoxelOverlapHit>();
+        var requestPtr = Marshal.AllocHGlobal(Marshal.SizeOf<Native.VoxelOverlapRequest>());
+        var hitPtr = Marshal.AllocHGlobal(checked(hitSize * hits.Length));
+        var resultPtr = Marshal.AllocHGlobal(Marshal.SizeOf<Native.VoxelOverlapResult>());
+        try
+        {
+            Marshal.StructureToPtr(
+                new Native.VoxelOverlapRequest
+                {
+                    Center = ToNative(request.Center),
+                    HalfExtents = ToNative(request.HalfExtents),
+                    MaterialMask = request.MaterialMask,
+                },
+                requestPtr,
+                false);
+            var overlap = GetDelegate<VoxelOverlapFn>(_api.Overlap, nameof(_api.Overlap));
+            var status = overlap(
+                _world,
+                requestPtr,
+                hitPtr,
+                checked((uint)hits.Length),
+                resultPtr);
+            ThrowIfFailed(status, nameof(Overlap));
+            var result = ToPublic(Marshal.PtrToStructure<Native.VoxelOverlapResult>(resultPtr));
+            // 写满的条目数就是 min(实际总数, 容量)：Truncated 已经把差额显式说清楚了。
+            var written = result.ActualCount > (uint)hits.Length
+                ? hits.Length
+                : (int)result.ActualCount;
+            for (var index = 0; index < written; index++)
+            {
+                hits[index] = ToPublic(
+                    Marshal.PtrToStructure<Native.VoxelOverlapHit>(hitPtr + index * hitSize));
+            }
+
+            return result;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(requestPtr);
+            Marshal.FreeHGlobal(hitPtr);
+            Marshal.FreeHGlobal(resultPtr);
+        }
+    }
+
     private VoxelBatchReadResult ReadBatch<TRequest>(
         TRequest request,
         nint slot,
@@ -743,6 +922,52 @@ public sealed class NativeVoxelWorld
     private static VoxelPresence ToPublic(Native.VoxelPresence value)
         => (VoxelPresence)(uint)value;
 
+    private static Native.VoxelWorldPoint ToNative(VoxelWorldPoint value)
+        => new() { X = value.X, Y = value.Y, Z = value.Z };
+
+    private static VoxelWorldPoint ToPublic(Native.VoxelWorldPoint value)
+        => new(value.X, value.Y, value.Z);
+
+    private static VoxelWorldCoordinate ToPublic(Native.VoxelWorldCoordinate value)
+        => new(value.X, value.Y, value.Z);
+
+    private static VoxelSectionKey ToPublic(Native.VoxelSectionKey value)
+        => new(value.X, value.Y, value.Z);
+
+    private static VoxelQueryResolution ToPublic(Native.VoxelQueryResolution value)
+        => (VoxelQueryResolution)(uint)value;
+
+    private static VoxelRaycastResult ToPublic(Native.VoxelRaycastResult value)
+        => new(
+            ToPublic(value.Resolution),
+            ToPublic(value.UnresolvedSection),
+            ToPublic(value.HitCell),
+            value.BlockId,
+            ToPublic(value.HitPoint),
+            ToPublic(value.HitNormal),
+            value.TravelDistance);
+
+    private static VoxelSweepResult ToPublic(Native.VoxelSweepResult value)
+        => new(
+            ToPublic(value.Resolution),
+            value.Collided != 0,
+            value.TravelFraction,
+            ToPublic(value.UnresolvedSection),
+            ToPublic(value.HitCell),
+            value.BlockId,
+            ToPublic(value.HitPoint),
+            ToPublic(value.HitNormal));
+
+    private static VoxelOverlapHit ToPublic(Native.VoxelOverlapHit value)
+        => new(ToPublic(value.Cell), value.BlockId);
+
+    private static VoxelOverlapResult ToPublic(Native.VoxelOverlapResult value)
+        => new(
+            ToPublic(value.Resolution),
+            ToPublic(value.UnresolvedSection),
+            value.ActualCount,
+            value.Truncated != 0);
+
 }
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -781,3 +1006,17 @@ internal delegate int VoxelAbortFn(nint world, nint token);
 
 [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 internal delegate int VoxelRevisionFn(nint world, nint section, nint result);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int VoxelRaycastFn(nint world, nint request, nint result);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int VoxelSweepFn(nint world, nint request, nint result);
+
+[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+internal delegate int VoxelOverlapFn(
+    nint world,
+    nint request,
+    nint hits,
+    uint capacity,
+    nint result);

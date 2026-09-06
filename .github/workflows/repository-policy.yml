@@ -5,14 +5,53 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: engine-verification-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  development:
-    name: Build SDK and prove Host loading
+  tools:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+      - run: node eng/test.mjs tools
+
+  managed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: node eng/test.mjs managed
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: managed-test-results
+          path: .run/managed-test-results/**
+          include-hidden-files: true
+          if-no-files-found: warn
+
+  integration:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,35 +66,35 @@ jobs:
           path: LumioVoxelEngine
       - uses: actions/checkout@v4
         with:
+          repository: LumioGames/LumioGameRuntime
+          path: LumioGameRuntime
+      - uses: actions/checkout@v4
+        with:
           repository: LumioGames/LumioServer
           path: LumioServer
       - uses: actions/checkout@v4
         with:
           repository: LumioGames/LumioClient
           path: LumioClient
-      # LumioClient modules resolve LumioRuntimeRoot from a sibling ../LumioGameRuntime
-      # (LumioClient/Directory.Build.props); without it Bot/Replica fail at restore.
-      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          repository: LumioGames/LumioGameRuntime
-          path: LumioGameRuntime
+          node-version: '22.16.0'
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-      - name: Generate ABI bindings
+      - name: Real Native interop and two fresh-process DS/Bot rounds
         working-directory: LumioGameEngineArchitecture
-        run: node eng/generate-abi.mjs
-      - name: Build SDK Native library
-        working-directory: LumioGameEngineArchitecture
-        run: chmod +x eng/dev-build.sh && ./eng/dev-build.sh
-      - name: Run SDK Rust tests
-        working-directory: LumioGameEngineArchitecture/engine/native
-        run: cargo test -p lumio-engine-native
-      - name: Run Loader tests
-        working-directory: LumioGameEngineArchitecture
-        run: dotnet test engine/managed/Lumio.Engine.NativeLoader.Tests/Lumio.Engine.NativeLoader.Tests.csproj
-      - name: Build Server and Client hosts
-        run: |
-          dotnet build LumioServer/mvp-host/src/Lumio.Server.MvpHost.App/Lumio.Server.MvpHost.App.csproj
-          dotnet build LumioClient/modules/bot/host/Lumio.Client.Bot.Host.csproj
+        run: node eng/test.mjs integration
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-evidence-${{ matrix.os }}
+          path: |
+            LumioGameEngineArchitecture/.run/verification/**/*.json
+            LumioGameEngineArchitecture/.run/verification/**/*.ndjson
+            LumioGameEngineArchitecture/.run/verification/**/*.log
+            LumioGameEngineArchitecture/.run/verification/**/*.trx
+            LumioGameEngineArchitecture/.build/native-workspace-*/native/build.log
+          include-hidden-files: true
+          if-no-files-found: warn

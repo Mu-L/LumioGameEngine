@@ -32,6 +32,10 @@ pub use abi_generated::{
 };
 pub use voxel::NativeVoxelProvider;
 
+/// 材质类表的注入入口所需的公共类型：契约 `physicsQuery.materialClassTable` 规定唯一来源是
+/// 官方方块目录 `blockCatalog` 的 `materialClass` 一列，由宿主在创建世界时注入。
+pub use lumio_voxel_domain::block::{BlockCatalogRowInput, OfficialCatalog, StateLayout};
+
 pub const SDK_ENTRY_SYMBOL: &str = abi_generated::ENTRY_SYMBOL;
 pub const SDK_ABI_DEFINITION_SHA256: &str = abi_generated::DEFINITION_SHA256;
 
@@ -217,9 +221,10 @@ static ROOT_API: LumioEngineRootApiV1 = LumioEngineRootApiV1 {
     residency_pin_declare: Some(voxel::residency_pin_declare),
     residency_pin_release: Some(voxel::residency_pin_release),
     residency_pin_status: Some(voxel::residency_pin_status),
-    raycast: None,
-    sweep: None,
-    overlap: None,
+    // A-1 物理三槽：转发 VoxelEngine 唯一的 physics_query 实现，不在 Native 侧另建 DDA。
+    raycast: Some(voxel::raycast),
+    sweep: Some(voxel::sweep),
+    overlap: Some(voxel::overlap),
 };
 
 /// The only Native SDK symbol. All other functions are reached through this table.
