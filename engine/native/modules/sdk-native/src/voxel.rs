@@ -1927,16 +1927,128 @@ mod tests {
     const ABI_DEFINITION: &str = include_str!("../../../../abi/native-abi.json");
     /// 生成物,用于确认契约条目数与生成的状态常量条目数一致。
     const ABI_GENERATED: &str = include_str!("abi_generated.rs");
+    /// 手写镜像自身的源码。反方向穷尽性校验要枚举 `status_for_error` 的 match 臂,
+    /// Rust 没有反射,只能读自己的源码。
+    const SELF_SOURCE: &str = include_str!("voxel.rs");
 
-    /// 从 `native-abi.json` 里取出 `voxel.errorStatusBase` 与 `voxel.errorCodes`。
-    /// 两个键在定义里各只出现一次,所以按键名定位即可,不需要引入 JSON 依赖。
+    /// 从 `text[start]` 处的开引号出发,返回闭合引号**之后**的下标(识别 `\"` 转义)。
+    /// JSON 与 Rust 源码的字符串字面量转义规则在这一点上一致。
+    fn end_of_quoted_literal(text: &str, start: usize) -> usize {
+        let bytes = text.as_bytes();
+        assert_eq!(bytes[start], b'"', "end_of_quoted_literal 必须从开引号出发");
+        let mut index = start + 1;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'\\' => index += 2,
+                b'"' => return index + 1,
+                _ => index += 1,
+            }
+        }
+        panic!("未闭合的字符串字面量");
+    }
+
+    /// 契约根对象里 `voxel` 段的切片(含首尾大括号)。
+    ///
+    /// 所有对手写镜像做穷尽性校验的解析**只允许在这一段里检索**。对整份 `native-abi.json`
+    /// 做全局 `find()` 会在将来任一子系统(runtime / timer / …)在 `voxel` **之前**引入同名键
+    /// (`errorStatusBase` / `errorCodes` / `material_mask`)时**静默读到别人的值**,穷尽性断言
+    /// 随之失效且不报错。托管侧 `VoxelFacadeTests` 用 `RootElement.GetProperty("voxel")` 定位,
+    /// 这里做同口径的限定;不引 JSON 依赖,只做一次带字符串与转义感知的括号配对扫描。
+    fn voxel_section() -> &'static str {
+        let bytes = ABI_DEFINITION.as_bytes();
+        let needle = "\"voxel\"";
+        let mut index = 0usize;
+        // depth 0 = 文档外;根对象的直接子键在 depth 1 上出现。
+        let mut depth = 0usize;
+        let mut found: Option<&'static str> = None;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'"' => {
+                    let literal_end = end_of_quoted_literal(ABI_DEFINITION, index);
+                    if depth == 1 && &ABI_DEFINITION[index..literal_end] == needle {
+                        let rest = ABI_DEFINITION[literal_end..].trim_start();
+                        let rest = rest
+                            .strip_prefix(':')
+                            .expect("native-abi.json voxel 键后必须跟冒号")
+                            .trim_start();
+                        let value_start = ABI_DEFINITION.len() - rest.len();
+                        assert!(
+                            ABI_DEFINITION.as_bytes()[value_start] == b'{',
+                            "native-abi.json 的 voxel 必须是一个对象"
+                        );
+                        let value_end = end_of_object(ABI_DEFINITION, value_start);
+                        assert!(
+                            found.is_none(),
+                            "native-abi.json 根对象里出现了多个 voxel 键"
+                        );
+                        found = Some(&ABI_DEFINITION[value_start..value_end]);
+                    }
+                    index = literal_end;
+                }
+                b'{' | b'[' => {
+                    depth += 1;
+                    index += 1;
+                }
+                b'}' | b']' => {
+                    depth -= 1;
+                    index += 1;
+                }
+                _ => index += 1,
+            }
+        }
+        found.expect("native-abi.json 根对象必须声明 voxel 段")
+    }
+
+    /// 从 `text[start]` 处的 `{` 出发,返回配对 `}` **之后**的下标;跳过字符串字面量。
+    fn end_of_object(text: &str, start: usize) -> usize {
+        let bytes = text.as_bytes();
+        assert_eq!(bytes[start], b'{', "end_of_object 必须从左大括号出发");
+        let mut depth = 0usize;
+        let mut index = start;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'"' => {
+                    index = end_of_quoted_literal(text, index);
+                    continue;
+                }
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return index + 1;
+                    }
+                }
+                _ => {}
+            }
+            index += 1;
+        }
+        panic!("未闭合的对象");
+    }
+
+    /// 在 `body` 里定位**恰好出现一次**的键 `key`,返回其值的起始切片。
+    /// 段内再出现同名键(例如 voxel 段自己长出嵌套的 `errorCodes`)时直接变红,
+    /// 而不是取第一个了事。
+    fn unique_key_value(body: &'static str, key: &str) -> &'static str {
+        let needle = format!("\"{key}\"");
+        let occurrences = body.matches(needle.as_str()).count();
+        assert_eq!(
+            occurrences, 1,
+            "voxel 段里的键 `{key}` 必须恰好出现一次,实际 {occurrences} 次;\
+             定位假设失效时本断言必须变红,不得静默取第一个"
+        );
+        let start = body.find(needle.as_str()).expect("已断言存在") + needle.len();
+        body[start..]
+            .trim_start()
+            .strip_prefix(':')
+            .unwrap_or_else(|| panic!("voxel.{key} 后必须跟冒号"))
+            .trim_start()
+    }
+
+    /// 从 `native-abi.json` 的 **voxel 段**里取出 `errorStatusBase` 与 `errorCodes`。
     fn contract_error_codes() -> (i32, Vec<&'static str>) {
-        let base_key = "\"errorStatusBase\":";
-        let base_start = ABI_DEFINITION
-            .find(base_key)
-            .expect("native-abi.json must declare voxel.errorStatusBase")
-            + base_key.len();
-        let base_rest = &ABI_DEFINITION[base_start..];
+        let voxel = voxel_section();
+
+        let base_rest = unique_key_value(voxel, "errorStatusBase");
         let base_end = base_rest
             .find(',')
             .expect("voxel.errorStatusBase must be followed by more fields");
@@ -1945,19 +2057,15 @@ mod tests {
             .parse()
             .expect("voxel.errorStatusBase must be an integer");
 
-        let codes_key = "\"errorCodes\":";
-        let codes_start = ABI_DEFINITION
-            .find(codes_key)
-            .expect("native-abi.json must declare voxel.errorCodes")
-            + codes_key.len();
-        let codes_rest = &ABI_DEFINITION[codes_start..];
-        let open = codes_rest
-            .find('[')
-            .expect("voxel.errorCodes must be an array");
+        let codes_rest = unique_key_value(voxel, "errorCodes");
+        assert!(
+            codes_rest.starts_with('['),
+            "voxel.errorCodes must be an array"
+        );
         let close = codes_rest
             .find(']')
             .expect("voxel.errorCodes must be a closed array");
-        let body = &codes_rest[open + 1..close];
+        let body = &codes_rest[1..close];
 
         let mut codes = Vec::new();
         let mut cursor = body;
@@ -1997,10 +2105,11 @@ mod tests {
     /// (例如契约追加了一个材质类而这里没跟)本用例必须变红,而不是让一条错误的掩码悄悄放行。
     #[test]
     fn material_mask_bits_match_the_contract_declaration() {
-        let section_start = ABI_DEFINITION
+        let voxel = voxel_section();
+        let section_start = voxel
             .find("\"material_mask\"")
             .expect("native-abi.json must declare voxel.enums.material_mask");
-        let section = &ABI_DEFINITION[section_start..];
+        let section = &voxel[section_start..];
         let values_start = section
             .find("\"values\"")
             .expect("material_mask must declare values");
@@ -2077,6 +2186,102 @@ mod tests {
             status_for_error("not_a_contract_error_code"),
             fallback,
             "non-contract errors must still land on the generic fallback"
+        );
+    }
+
+    /// 取 `fn status_for_error` 的函数体(不含外层大括号)。
+    /// 按行首签名定位——本文件里这条签名还会作为字符串字面量出现在下面的解析器里,
+    /// 而那一处是缩进的,所以「行首 + 恰好一次」既能锁定真正的定义,又能在文件结构变化时变红。
+    fn status_for_error_body() -> &'static str {
+        let signature = "\nfn status_for_error(error: &str) -> i32 {";
+        let occurrences = SELF_SOURCE.matches(signature).count();
+        assert_eq!(
+            occurrences, 1,
+            "voxel.rs 必须在行首恰好定义一次 status_for_error,实际 {occurrences} 次"
+        );
+        let start = SELF_SOURCE.find(signature).expect("已断言存在") + signature.len();
+        let bytes = SELF_SOURCE.as_bytes();
+        let mut depth = 1usize;
+        let mut index = start;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'"' => {
+                    index = end_of_quoted_literal(SELF_SOURCE, index);
+                    continue;
+                }
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &SELF_SOURCE[start..index];
+                    }
+                }
+                _ => {}
+            }
+            index += 1;
+        }
+        panic!("status_for_error 的函数体必须闭合");
+    }
+
+    /// `status_for_error` 里所有具名臂的模式字符串。函数体里的字符串字面量只有 match 臂的
+    /// 模式(臂的值都是 `crate::abi_generated::VOXEL_ERROR_*` 路径),所以「字符串后面跟
+    /// `=>` 或 `|`」就是一条具名臂。
+    fn status_for_error_named_arms() -> Vec<&'static str> {
+        let body = status_for_error_body();
+        let bytes = body.as_bytes();
+        let mut arms = Vec::new();
+        let mut index = 0usize;
+        while index < bytes.len() {
+            if bytes[index] == b'"' {
+                let end = end_of_quoted_literal(body, index);
+                let tail = body[end..].trim_start();
+                if tail.starts_with("=>") || tail.starts_with('|') {
+                    arms.push(&body[index + 1..end - 1]);
+                }
+                index = end;
+            } else {
+                index += 1;
+            }
+        }
+        arms
+    }
+
+    /// 反方向穷尽性断言:`status_for_error` **不得**含公共契约之外的具名臂。
+    ///
+    /// 正向断言(`status_for_error_covers_every_contract_error_code`)只沿「契约 → 手写映射」
+    /// 遍历,查不出这一类漂移:契约删掉一条错误码后残留的臂、或有人为了给某个内部错误
+    /// 「凑个码」私自加的臂,都能在正向断言全绿的情况下留下。托管侧对应的检查是
+    /// `VoxelFacadeTests.EveryContractStatusHasAStableManagedErrorCode` 末尾的成员数相等断言,
+    /// 这里补齐 Rust 侧的同一口径。
+    #[test]
+    fn status_for_error_has_no_named_arm_outside_the_contract() {
+        let (_, codes) = contract_error_codes();
+        let contract: std::collections::BTreeSet<&str> = codes.iter().copied().collect();
+        assert_eq!(
+            contract.len(),
+            codes.len(),
+            "native-abi.json voxel.errorCodes 不得有重复条目"
+        );
+
+        let mut seen = std::collections::BTreeSet::new();
+        for arm in status_for_error_named_arms() {
+            assert!(
+                seen.insert(arm),
+                "status_for_error 出现重复的具名臂 `{arm}`"
+            );
+            assert!(
+                contract.contains(arm),
+                "status_for_error 的具名臂 `{arm}` 不在 native-abi.json voxel.errorCodes 里;\
+                 手写镜像不得自造契约之外的错误码"
+            );
+        }
+
+        assert_eq!(
+            seen.len(),
+            contract.len(),
+            "status_for_error 的具名臂数({})必须与契约错误码数({})相等",
+            seen.len(),
+            contract.len()
         );
     }
 }
