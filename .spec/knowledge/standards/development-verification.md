@@ -34,6 +34,8 @@ metadata:
 
 本地允许用 `NATIVE_CORE_ROOT`、`VOXEL_ROOT`、`LumioRuntimeRoot`、`LumioServerRoot`、`LumioClientRoot` 指定候选 worktree；工具不会自动 checkout、reset 或修改其他仓。
 
+Rust 工具链号只有一个来源：本仓 `engine/native/rust-toolchain.toml`，值定为 1.98.0（[ADR-069](../../decisions/ADR-069-nativecore-audit-rulings.md) 第 4 条）；NativeCore 与 VoxelEngine 的 `rust-toolchain.toml` 同号。今天三仓文件仍是 1.89 / 1.88 / 1.98，抬号归架构仓 A-W1 与 NativeCore N-W1，落地前以 ADR 为准。钉工具链是构建输入（同 `global.json`、`Cargo.lock`），不是钉依赖仓 SHA。
+
 `verification.json` 仍记录本次实际用到的每仓 SHA 与 dirty 标志、Native 构建参数、工具链输出以及本次 Server/Runtime/Bot 文件 SHA 作为证据。源码可快速变化，但“测试用了什么”必须可回溯。Rust stable 和 .NET 10.0.x 仍由安装器解析；证据记录实际版本，这不是完全密闭的可重现工具链保证。
 
 ## 构建与装载

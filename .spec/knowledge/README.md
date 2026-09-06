@@ -38,6 +38,7 @@ metadata:
 | [`features/ecs-entity-chat.md`](features/ecs-entity-chat.md) | ECS 正式实体与聊天垂直切片的需求真值——行为与归属边界;实现该切片或改其验收标准前查 |
 | [`features/runtime-manager-controls.md`](features/runtime-manager-controls.md) | Runtime Manager 内部准入、断开与重绑定控制消息——网络线程入队、Owner Thread 统一应用;修改连接生命周期前查 |
 | [`features/runtime-manager-query-expiry.md`](features/runtime-manager-query-expiry.md) | Runtime owner-thread expiry, binding resolution, and attribute query controls for the R5 host bridge (ADR-063) |
+| [`features/native-core.md`](features/native-core.md) | NativeCore 能力目录与接入指南——每个 crate 能干什么、唯一推荐入口、谁在用、怎么到达；上游做通用底层能力前必查 |
 | [`features/bomber-slice.md`](features/bomber-slice.md) | 炸弹人战斗切片的引擎验收需求真值——世界模型套用、引擎能力组合、第二样板与五组验收场景;排引擎卡或改引擎验收标准前查 |
 | [`features/_TEMPLATE.md`](features/_TEMPLATE.md) | 新功能文档模板——新增功能记录时照此建,放对 领域 / 模块 |
 
@@ -54,4 +55,3 @@ metadata:
 ---
 
 新增 / 修改 / 维护知识文档(放哪、frontmatter、同步本导航)→ 用 `spec-steward` 技能;决策记录(唯一落点)→ [`../decisions/`](../decisions/README.md)。
-| [`features/runtime-manager-query-expiry.md`](features/runtime-manager-query-expiry.md) | Runtime owner-thread expiry, binding resolution, and attribute query controls for the R5 host bridge (ADR-063) |

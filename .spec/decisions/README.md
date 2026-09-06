@@ -89,6 +89,7 @@
 | [ADR-066](ADR-066-voxel-owner-rulings.md) | R-00434 体素 Owner 裁决：BlockType=2/3 typed sentinel、解析域 hybrid 与 unregistered_block_type、目录行结构优先校验 | Draft |
 | [ADR-067](ADR-067-browser-client-prediction-dotnet-wasm.md) | 浏览器客户端预测走 .NET WebAssembly 装载 Runtime 客户端模块（桌面浏览器）；手机浏览器待真机数据；落地卡 = R-00470 AC06，Runtime 义务落 R-00466 | Draft |
 | [ADR-068](ADR-068-development-verification-follow-main.md) | 开发期验证：五个依赖仓跟 main 不钉号、红当天修；CI 三作业每次都跑、无路径选择与 gate；验证规则只保留 `development-verification.md` 一套；否决评审 §8–§10 锁文件 / required-gate | Accepted |
+| [ADR-069](ADR-069-nativecore-audit-rulings.md) | NativeCore 审计复核 Owner 裁决：`lumio-hfsm` 为引擎唯一状态机迁移内核（须能编 wasm32）、NativeCore 未到 Release 不加检测工具、三仓 Rust 工具链统一 1.98.0、零消费者模块不删改为开放优先（能力目录 `native-core.md`） | Draft |
 
 旧制度的 `DECISIONS_PENDING` 待决台账已随 `docs/` 一并删除（见 git 历史）；Living Architecture 下未定项直接落 ADR 或任务卡，不再另设台账。
 
