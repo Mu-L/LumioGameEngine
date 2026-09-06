@@ -8,7 +8,7 @@ metadata:
 
 # Lumio Tick 设计概要（一帧 13 相）
 
-> 相名与顺序以 Runtime `modules/simulation/src/Lumio.GameRuntime.Simulation/Phases/TickPhase.cs` 的枚举为准（本文是它的活文档，冲突时改本文或开 ADR，不在实现里绕）。旧制度的 [ADR-002](../../decisions/ADR-002-tick-determinism.md) / [ADR-027](../../decisions/ADR-027-tick-fail-stop.md) / [ADR-030](../../decisions/ADR-030-processor-structural-commands.md) 的技术结论迁入本文；帧内读写规则与游戏系统注册方式由 [ADR-063](../../decisions/ADR-063-architecture-review-owner-rulings-identity-persist-prediction.md) 裁决。
+> 相名与顺序以 Runtime `src/Lumio.GameRuntime.Primitives/TickPhase.cs` 的枚举为准（本文是它的活文档，冲突时改本文或开 ADR，不在实现里绕）。相契约表（每相可写域、失败分类、唯一提交点等）在 `modules/simulation/src/Lumio.GameRuntime.Simulation/Phases/PhaseContractTable.cs`。<br>枚举自 2026-09-06（R-00475）起住在底座工程而非 `modules/simulation`：`command` 的 `CommandSortKey` 按相排序且相名字符串进排序键，而依赖方向是 `simulation → command`，放 `simulation` 会成环（理由见 Runtime 仓 ADR 0003）。旧制度的 [ADR-002](../../decisions/ADR-002-tick-determinism.md) / [ADR-027](../../decisions/ADR-027-tick-fail-stop.md) / [ADR-030](../../decisions/ADR-030-processor-structural-commands.md) 的技术结论迁入本文；帧内读写规则与游戏系统注册方式由 [ADR-063](../../decisions/ADR-063-architecture-review-owner-rulings-identity-persist-prediction.md) 裁决。
 > 配套：[ECS](ecs.md)（结构事务落在哪一相）、[GAS](gas.md)（重算与取样落在哪一相）、[体素](voxel.md)（`VoxelCommit`）、[DS](ds-server.md)（配额读取与打包相）、[存档](save-load.md)（取样切点）。
 
 ---
