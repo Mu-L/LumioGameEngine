@@ -13,6 +13,13 @@ function pendingJson(path) {
   try { return json(path); } catch (error) { if (error.code === 'ENOENT' || error instanceof SyntaxError) return null; throw error; }
 }
 
+export function serverBuildPlan(serverRoot, targetDir) {
+  return ['build', '--locked', '--manifest-path', join(serverRoot, 'Cargo.toml'),
+    '--bin', 'lumio-server', '--bin', 'lumio-entity-chat-replay',
+    '--features', 'test-harness', '--message-format=json-render-diagnostics',
+    '--target-dir', targetDir];
+}
+
 export function managedBuildPlan(roots, evidence, verify) {
   const builds = [
     { project: join(roots.LumioGameRuntime, 'modules/hello/entry'), output: join(evidence, 'runtime') },
@@ -144,9 +151,9 @@ export async function runDevelopment({ root, verify = false, keepRunning = false
     const native = buildNative({ root, nativeCoreRoot: roots.LumioNativeCore, voxelRoot: roots.LumioVoxelEngine });
     report.native = native;
     report.dotnet = command('dotnet', ['--info'], { cwd: root, log: join(evidence, 'dotnet.log') });
-    const serverOutput = command('cargo', ['build', '--locked', '--manifest-path', join(roots.LumioServer, 'Cargo.toml'),
-      '--bin', 'lumio-server', '--features', 'test-harness', '--message-format=json-render-diagnostics', '--target-dir', join(root, '.build/server-target')],
-    { cwd: roots.LumioServer, log: join(evidence, 'server-build.log') });
+    const serverArgs = serverBuildPlan(roots.LumioServer, join(root, '.build/server-target'));
+    const serverOutput = command('cargo', serverArgs,
+      { cwd: roots.LumioServer, log: join(evidence, 'server-build.log') });
     const artifacts = serverOutput.split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line));
     const serverExe = artifacts.findLast(row => row.reason === 'compiler-artifact' && row.target?.name === 'lumio-server' && row.executable)?.executable;
     if (!serverExe) throw new Error('Cargo did not identify the built lumio-server executable.');

@@ -1,6 +1,18 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { managedBuildPlan, parseNativeProof } from './dev-run.mjs';
+import { managedBuildPlan, parseNativeProof, serverBuildPlan } from './dev-run.mjs';
+
+test('server build plan includes --features test-harness and both bins', () => {
+  const args = serverBuildPlan('/path/to/server', '/path/to/target');
+  assert.equal(args[0], 'build');
+  assert.ok(args.includes('--locked'));
+  assert.ok(args.includes('--bin'));
+  assert.ok(args.includes('lumio-server'));
+  assert.ok(args.includes('lumio-entity-chat-replay'));
+  const featureIndex = args.indexOf('--features');
+  assert.ok(featureIndex !== -1, 'args should include --features');
+  assert.equal(args[featureIndex + 1], 'test-harness');
+});
 
 test('managed build plan always builds Runtime and Foundation before selecting outputs', () => {
   const roots = { LumioGameRuntime: '/workspace/runtime with spaces', LumioClient: '/workspace/client with spaces' };

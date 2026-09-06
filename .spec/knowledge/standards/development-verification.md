@@ -40,7 +40,7 @@ Rust 工具链号只有一个来源：本仓 `engine/native/rust-toolchain.toml`
 
 ## 构建与装载
 
-每次运行都调用 Cargo/MSBuild 的增量构建，不以旧文件存在作为跳过条件。Runtime/Bot 输出到本次唯一目录，Server 可执行路径来自 Cargo 的 compiler-artifact 结果。Native 输出同样使用唯一 staging 子目录，不覆盖旧进程映射的文件。
+每次运行都调用 Cargo/MSBuild 的增量构建，不以旧文件存在作为跳过条件。Runtime/Bot 输出到本次唯一目录，Server 可执行路径来自 Cargo 的 compiler-artifact 结果；Server 的 hello / replay 入口在 Server 仓 `test-harness` feature 下，dev-run 显式开启，生产入口 `lumio-ds` 不在此路径。Native 输出同样使用唯一 staging 子目录，不覆盖旧进程映射的文件。
 
 Native 源码摘要使用仓内相对路径和仓库标识，不包含绝对 worktree 路径或 `.spec` 文档。有效 crate 输入、已生成绑定、Cargo 锁文件仍参与摘要。BuildId 另外包含目标、configuration、工具链和选定构建环境参数；构建后文件 SHA 单独计算。构建过程中输入发生变化则拒绝发布该次产物，要求隔离 worktree 后重试。摘要不是发行签名，也不保证所有外部编译器环境均已密闭。
 
