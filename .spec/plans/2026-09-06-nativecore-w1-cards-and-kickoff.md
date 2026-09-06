@@ -8,9 +8,9 @@ metadata:
 
 # NativeCore · W1 两张卡卡面与开工提示词
 
-> 来源：[`reviews/2026-09-06-nativecore-source-audit-reassessment.md`](../reviews/2026-09-06-nativecore-source-audit-reassessment.md) 与 [ADR-069](../decisions/ADR-069-nativecore-audit-rulings.md) 第 3 / 4 条。卡面按 workflow-ops `card-spec`（背景 / 目标 / 验收 / 边界）。**待 Owner 授权后落 Workflow RM-00002**（新建卡须逐次授权）。两卡文件集不重叠（N-W1 只碰 CI / xtask / tools / toolchain；N-W2 只碰 timer 源码与测试、hfsm 注释与文档、根目录残留），可并行派两个 worktree。
+> 来源：[`reviews/2026-09-06-nativecore-source-audit-reassessment.md`](../reviews/2026-09-06-nativecore-source-audit-reassessment.md) 与 [ADR-069](../decisions/ADR-069-nativecore-audit-rulings.md) 第 3 / 4 条。卡面按 workflow-ops `card-spec`（背景 / 目标 / 验收 / 边界）。**已落单 Workflow RM-00002**：[R-00504](https://lumiogamesengine.workflow.games/requirements/01a07725-5953-7f7c-b745-5e231c991a79) 与 [R-00505](https://lumiogamesengine.workflow.games/requirements/01a07725-5e38-7d9c-a3fe-b23c7b593599)。两卡文件集不重叠（N-W1 只碰 CI / xtask / tools / toolchain；N-W2 只碰 timer 源码与测试、hfsm 注释与文档、根目录残留），并行派两个 worktree。
 
-## 一、N-W1 门禁回收 + 工具链统一
+## 一、N-W1 门禁回收 + 工具链统一（[R-00504](https://lumiogamesengine.workflow.games/requirements/01a07725-5953-7f7c-b745-5e231c991a79)）
 
 **标题**：`[程序·协议/公共][NativeCore·W1] 回收 PR #9 的 Python 检查器与三系统 CI，xtask 收回检查，工具链统一 1.98.0`
 
@@ -38,7 +38,7 @@ metadata:
 - 不恢复任何已删的 Baseline / 镜像 / 合同守卫。
 - 不改架构仓文件；架构仓 `engine/native/rust-toolchain.toml` 抬到 1.98.0 归架构仓卡 A-W1。
 
-## 二、N-W2 F07 活性缺口 + 文档漂移 + 残留文件
+## 二、N-W2 F07 活性缺口 + 文档漂移 + 残留文件（[R-00505](https://lumiogamesengine.workflow.games/requirements/01a07725-5e38-7d9c-a3fe-b23c7b593599)）
 
 **标题**：`[程序·协议/公共][NativeCore·W1] 修 timer 单 tick 超预算永久拒绝；hfsm / timer 文档改引正确 ADR；删根目录残留报告`
 
@@ -65,11 +65,37 @@ PR #9 修 F07 的办法是：`advance(to_tick)` 先按除法算出本次会产�
 - 不动 CI / xtask / toolchain（N-W1 的文件集）。
 - 不接 hfsm ABI，不改 hfsm 逻辑；hfsm 只改 `.rs` 文档注释与 README / spec / ADR 0011 里的 ADR 指针。
 
-## 三、开工提示词（两卡各开一个窗口，工作目录 `~/LumioGames/LumioNativeCore`，整段粘贴；把 `<卡号>` / `<链接>` 换成落单后的值）
+## 三、开工提示词（已填卡号与链接）
 
+### N-W1（R-00504）
 ```text
-你是 LumioNativeCore 仓的 Native 内核工程师。这一轮只做一张卡：Workflow（lumiogamesengine）<卡号>
-「<标题>」<链接>
+你是 LumioNativeCore 仓的 Native 内核工程师。这一轮只做一张卡：Workflow（lumiogamesengine）R-00504
+「[程序·协议/公共][NativeCore·W1] 回收 PR #9 的 Python 检查器与三系统 CI，xtask 收回检查，工具链统一 1.98.0」
+https://lumiogamesengine.workflow.games/requirements/01a07725-5953-7f7c-b745-5e231c991a79
+
+【守门（第一步，任一不符立即停下回报 BLOCKED，不得继续）】
+1. 本仓 origin/main 是 c5a8905 或其后继；用 git worktree 在独立目录开分支，主工作区不动。
+2. 用 workflow-execute 读全这张卡：正文 + 全部验收项 + 评论；读不到就停。
+3. 架构仓 ~/LumioGames/LumioGameEngine 的 .spec/decisions/ADR-069-nativecore-audit-rulings.md 与
+   .spec/knowledge/features/native-core.md 存在；本卡的裁决依据在那里，读一遍再动手。
+
+【指路】
+- 卡面正文就是任务书，按验收项顺序做；每条验收项都要有命令 + 输出作证据，不接受「已通过」三个字。
+- 先加载再动手：before-you-code；测试先行：test-driven-development。
+- 不夹带：只做卡面里的事。N-W1 不碰 crate 源码。两卡并行，文件集不得越界。
+- 改到本仓公开 Rust API 时必须在架构仓 engine/native 复跑 cargo build/test -p lumio-engine-native；
+  编不过且原因不在本卡 → 标 BLOCKED 上报，不得改架构仓文件。
+
+【交回物（全仓单一权威）】
+① 改动清单；② 验证证据（命令与关键输出）；③ known gaps；④ 知识沉淀落点（本仓 .spec 与 ADR，或声明无需沉淀）。
+提交命令与 PR 由用户在终端敲，你只准备好分支与交回物。
+```
+
+### N-W2（R-00505）
+```text
+你是 LumioNativeCore 仓的 Native 内核工程师。这一轮只做一张卡：Workflow（lumiogamesengine）R-00505
+「[程序·协议/公共][NativeCore·W1] 修 timer 单 tick 超预算永久拒绝；hfsm / timer 文档改引正确 ADR；删根目录残留报告」
+https://lumiogamesengine.workflow.games/requirements/01a07725-5e38-7d9c-a3fe-b23c7b593599
 
 【守门（第一步，任一不符立即停下回报 BLOCKED，不得继续）】
 1. 本仓 origin/main 是 c5a8905 或其后继；用 git worktree 在独立目录开分支，主工作区不动。
@@ -80,7 +106,7 @@ PR #9 修 F07 的办法是：`advance(to_tick)` 先按除法算出本次会产�
 【指路】
 - 卡面正文就是任务书，按验收项顺序做；每条验收项都要有命令 + 输出作证据，不接受「已通过」三个字。
 - 先加载再动手：before-you-code；测试先行：test-driven-development（N-W2 的验收 1 必须先红后绿）。
-- 不夹带：只做卡面里的事。N-W1 不碰 crate 源码；N-W2 不碰 CI / xtask / toolchain。两卡并行，文件集不得越界。
+- 不夹带：只做卡面里的事。N-W2 不碰 CI / xtask / toolchain。两卡并行，文件集不得越界。
 - 改到本仓公开 Rust API 时必须在架构仓 engine/native 复跑 cargo build/test -p lumio-engine-native；
   编不过且原因不在本卡 → 标 BLOCKED 上报，不得改架构仓文件。
 
