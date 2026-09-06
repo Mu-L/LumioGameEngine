@@ -4,22 +4,22 @@ use crate::abi_generated::{
     VoxelSectionSegment, VoxelWorldCoordinate, VoxelWriteReceipt,
 };
 use crate::LumioStatus;
-use lumio_voxel_contracts::{sha256, BASELINE_ID, SCHEMA_EPOCH};
+use lumio_voxel_contracts::sha256;
 use lumio_voxel_domain::block::{BlockId, CellOffset};
 use lumio_voxel_domain::config_snapshot::{
-    DecisionEvidence, GateSourceHashes, GeneratedHostCapability, GeneratedVoxelConfig,
-    VoxelConfigSnapshot, P0_DECISION_GATES,
+    HostCapabilitySet, VoxelConfigInput, VoxelConfigSnapshot, CONFIG_TABLE_SCHEMA,
+    HOST_CAPABILITY_SCHEMA,
 };
 use lumio_voxel_domain::publication::PublishedStateRoot;
-use lumio_voxel_domain::revision::{GeneratedRevisionStamp, REVISION_STAMP_SCHEMA};
+use lumio_voxel_domain::revision::{RevisionStamp, REVISION_STAMP_SCHEMA};
 use lumio_voxel_domain::section::{
     SectionDeltaBuilder, SectionPage, SectionPayload, SectionPayloadEnvelope, SectionSlot,
     SectionStorage,
 };
 use lumio_voxel_ops::async_support::{OriginEnvelope, OriginToken};
 use lumio_voxel_ops::mutation::{MutationEntry, MutationRequest, PreparedMutation};
-use lumio_voxel_ops::query::{BlockReadSection, BlockReadWorld, GeneratedVoxelQueryRequest};
-use lumio_voxel_world::port::GeneratedVoxelWorldPortAdapter;
+use lumio_voxel_ops::query::{BlockReadSection, BlockReadWorld, VoxelQueryRequest};
+use lumio_voxel_world::port::VoxelWorldPortAdapter;
 use lumio_voxel_world::world::{
     PinBudget, PinId, RegionPinManager, VoxelWorld, WorldCommand, WorldConfigAdapter,
     WorldDescriptor,
@@ -229,7 +229,7 @@ impl NativeVoxelProvider {
                 .map_err(|e| e.error_id())?;
             revisions.insert(key.id(), state.revision);
         }
-        let stamp = GeneratedRevisionStamp {
+        let stamp = RevisionStamp {
             schema_id: REVISION_STAMP_SCHEMA,
             world_id: view.stamp().world_id.clone(),
             context_id: view.stamp().context_id.clone(),
@@ -321,11 +321,11 @@ impl NativeVoxelProvider {
             )
             .map_err(|error| canonical_error_id(error.error_id()))?;
             let config_hash = self.world.config_hash().to_string();
-            GeneratedVoxelWorldPortAdapter::new(&mut self.world)
+            VoxelWorldPortAdapter::new(&mut self.world)
                 .query(OriginEnvelope {
                     origin,
                     config_hash,
-                    payload: GeneratedVoxelQueryRequest {
+                    payload: VoxelQueryRequest {
                         query_id,
                         world_id: state.world_id().to_string(),
                         context: state.world_context_id().to_string(),
@@ -366,46 +366,15 @@ impl NativeVoxelProvider {
 }
 
 fn approved_snapshot(label: &str) -> Arc<VoxelConfigSnapshot> {
-    let source = GateSourceHashes {
-        architecture_baseline_id: BASELINE_ID.to_string(),
-        voxel_head: "b2f0d8a3763a02f805e29cbd101560ba7fdca77b".to_string(),
-        architecture_mirror_sha256:
-            "f1d36acf33a1f5e8326a9e58d609fcf7d9fa85177f9b5b60bb3f4742c1afebd0".to_string(),
-        v13_decision_gates_sha256:
-            "4850057dd8926c11c8c3beebe109d18dffdb7e84cd451426d7d635860be5ede2".to_string(),
-        blueprint_sha256: "32e76066eb298aad20f4149760abbeddacb6d6c43e096945f1cf0ea75b2471aa"
-            .to_string(),
-    };
-    let digests = P0_DECISION_GATES
-        .iter()
-        .map(|gate| {
-            (
-                (*gate).to_string(),
-                hex32(&sha256(format!("approved-{gate}").as_bytes())),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    let evidence = P0_DECISION_GATES
-        .iter()
-        .map(|gate| DecisionEvidence {
-            gate_id: (*gate).to_string(),
-            approval_status: "approved".to_string(),
-            source_hashes: source.clone(),
-            evidence_digest: digests[*gate].clone(),
-        })
-        .collect::<Vec<_>>();
-    let config = GeneratedVoxelConfig {
-        schema_id: "config-table",
-        host_capability_schema_id: "host-capability",
-        schema_epoch: SCHEMA_EPOCH,
+    let config = VoxelConfigInput {
+        schema_id: CONFIG_TABLE_SCHEMA,
+        host_capability_schema_id: HOST_CAPABILITY_SCHEMA,
         config_hash: hex32(&sha256(label.as_bytes())),
-        gate_source_hashes: digests,
-        host_capability: GeneratedHostCapability::from_names(["Native", "ReferenceVoxel"]),
+        host_capability: HostCapabilitySet::from_names(["Native", "ReferenceVoxel"]),
         start_capabilities: vec!["Native".to_string(), "ReferenceVoxel".to_string()],
         key_material: None,
     };
-    VoxelConfigSnapshot::from_generated(&config, &evidence)
-        .expect("paired VoxelEngine config snapshot must be approved")
+    VoxelConfigSnapshot::load(&config).expect("paired VoxelEngine config snapshot must be accepted")
 }
 
 fn drive_lifecycle(world: &mut VoxelWorld) {
@@ -960,15 +929,15 @@ pub unsafe extern "C" fn block_write_prepare(
             Err(error) => return status_for_error(error.error_id()),
         };
         let config_hash = provider.world.config_hash().to_string();
-        let mutation = match GeneratedVoxelWorldPortAdapter::new(&mut provider.world)
-            .prepare_mutation(OriginEnvelope {
+        let mutation =
+            match VoxelWorldPortAdapter::new(&mut provider.world).prepare_mutation(OriginEnvelope {
                 origin,
                 config_hash,
                 payload: request.clone(),
             }) {
-            Ok(envelope) => envelope.payload,
-            Err(error) => return status_for_error(error.error_id()),
-        };
+                Ok(envelope) => envelope.payload,
+                Err(error) => return status_for_error(error.error_id()),
+            };
         let mut token = Box::new(PreparedToken {
             transaction_id,
             request,
@@ -1042,23 +1011,22 @@ pub unsafe extern "C" fn block_write_commit(
             Err(error) => return status_for_error(error.error_id()),
         };
         let config_hash = provider.world.config_hash().to_string();
-        let receipt =
-            match GeneratedVoxelWorldPortAdapter::new(&mut provider.world).commit(OriginEnvelope {
-                origin,
-                config_hash,
-                payload: prepared,
-            }) {
-                Ok(receipt) => receipt.payload,
-                Err(error) => {
-                    let error_id = canonical_error_id(error.error_id());
-                    provider
-                        .prepared
-                        .get_mut(&address)
-                        .expect("token remains owned")
-                        .terminal_error = Some(error_id);
-                    return status_for_error(error_id);
-                }
-            };
+        let receipt = match VoxelWorldPortAdapter::new(&mut provider.world).commit(OriginEnvelope {
+            origin,
+            config_hash,
+            payload: prepared,
+        }) {
+            Ok(receipt) => receipt.payload,
+            Err(error) => {
+                let error_id = canonical_error_id(error.error_id());
+                provider
+                    .prepared
+                    .get_mut(&address)
+                    .expect("token remains owned")
+                    .terminal_error = Some(error_id);
+                return status_for_error(error_id);
+            }
+        };
         let _receipt_bytes = receipt.receipt;
         let view = provider.world.publication_authority().capture();
         let entries = provider.prepared[&address].entries.clone();
@@ -1174,7 +1142,7 @@ pub unsafe extern "C" fn block_write_abort(world: *mut c_void, token: *mut c_voi
             Err(error) => return status_for_error(error.error_id()),
         };
         let config_hash = provider.world.config_hash().to_string();
-        match GeneratedVoxelWorldPortAdapter::new(&mut provider.world).abort(OriginEnvelope {
+        match VoxelWorldPortAdapter::new(&mut provider.world).abort(OriginEnvelope {
             origin,
             config_hash,
             payload: request.clone(),
