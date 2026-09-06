@@ -614,6 +614,12 @@ fn status_for_error(error: &str) -> i32 {
         "unregistered_block_type" => {
             crate::abi_generated::VOXEL_ERROR_UNREGISTERED_BLOCK_TYPE
         }
+        "write_batch_partially_applied" => {
+            crate::abi_generated::VOXEL_ERROR_WRITE_BATCH_PARTIALLY_APPLIED
+        }
+        "base_revision_on_full_encoding" => {
+            crate::abi_generated::VOXEL_ERROR_BASE_REVISION_ON_FULL_ENCODING
+        }
         _ => LumioStatus::InvalidArgument as i32,
     }
 }
@@ -1481,6 +1487,100 @@ mod tests {
         assert_eq!(
             crate::abi_generated::VOXEL_ERROR_UNREGISTERED_BLOCK_TYPE,
             1051
+        );
+    }
+
+    /// 公共契约定义(唯一真值),用于对手写映射做穷尽性校验。
+    const ABI_DEFINITION: &str = include_str!("../../../../abi/native-abi.json");
+    /// 生成物,用于确认契约条目数与生成的状态常量条目数一致。
+    const ABI_GENERATED: &str = include_str!("abi_generated.rs");
+
+    /// 从 `native-abi.json` 里取出 `voxel.errorStatusBase` 与 `voxel.errorCodes`。
+    /// 两个键在定义里各只出现一次,所以按键名定位即可,不需要引入 JSON 依赖。
+    fn contract_error_codes() -> (i32, Vec<&'static str>) {
+        let base_key = "\"errorStatusBase\":";
+        let base_start = ABI_DEFINITION
+            .find(base_key)
+            .expect("native-abi.json must declare voxel.errorStatusBase")
+            + base_key.len();
+        let base_rest = &ABI_DEFINITION[base_start..];
+        let base_end = base_rest
+            .find(',')
+            .expect("voxel.errorStatusBase must be followed by more fields");
+        let base: i32 = base_rest[..base_end]
+            .trim()
+            .parse()
+            .expect("voxel.errorStatusBase must be an integer");
+
+        let codes_key = "\"errorCodes\":";
+        let codes_start = ABI_DEFINITION
+            .find(codes_key)
+            .expect("native-abi.json must declare voxel.errorCodes")
+            + codes_key.len();
+        let codes_rest = &ABI_DEFINITION[codes_start..];
+        let open = codes_rest
+            .find('[')
+            .expect("voxel.errorCodes must be an array");
+        let close = codes_rest
+            .find(']')
+            .expect("voxel.errorCodes must be a closed array");
+        let body = &codes_rest[open + 1..close];
+
+        let mut codes = Vec::new();
+        let mut cursor = body;
+        while let Some(open_quote) = cursor.find('"') {
+            let after = &cursor[open_quote + 1..];
+            let close_quote = after
+                .find('"')
+                .expect("voxel.errorCodes entries must be quoted strings");
+            codes.push(&after[..close_quote]);
+            cursor = &after[close_quote + 1..];
+        }
+
+        assert!(
+            !codes.is_empty(),
+            "voxel.errorCodes must not be empty in native-abi.json"
+        );
+        (base, codes)
+    }
+
+    /// 穷尽性断言:手写的 `status_for_error` 必须覆盖公共契约里的**每一条**错误码,
+    /// 且数值与生成物一致。契约追加错误码而这里漏改时,本用例必须变红。
+    #[test]
+    fn status_for_error_covers_every_contract_error_code() {
+        let (base, codes) = contract_error_codes();
+        let generated = ABI_GENERATED
+            .lines()
+            .filter(|line| line.starts_with("pub const VOXEL_ERROR_"))
+            .count();
+        assert_eq!(
+            codes.len(),
+            generated,
+            "native-abi.json voxel.errorCodes ({}) and abi_generated.rs VOXEL_ERROR_* ({}) diverged; \
+             regenerate with `node eng/generate-abi.mjs`",
+            codes.len(),
+            generated
+        );
+
+        let fallback = LumioStatus::InvalidArgument as i32;
+        for (index, code) in codes.iter().enumerate() {
+            let expected = base + index as i32;
+            let actual = status_for_error(code);
+            assert_ne!(
+                actual, fallback,
+                "contract error code `{code}` collapses into the generic InvalidArgument fallback; \
+                 add a named arm to status_for_error"
+            );
+            assert_eq!(
+                actual, expected,
+                "contract error code `{code}` must map to the stable status {expected}"
+            );
+        }
+
+        assert_eq!(
+            status_for_error("not_a_contract_error_code"),
+            fallback,
+            "non-contract errors must still land on the generic fallback"
         );
     }
 }

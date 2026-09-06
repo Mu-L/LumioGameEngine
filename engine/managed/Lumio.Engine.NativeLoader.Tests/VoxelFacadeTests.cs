@@ -193,15 +193,76 @@ public sealed class VoxelFacadeTests
         Assert.Equal(27ul, result.SectionRevision);
     }
 
+    /// <summary>
+    /// 穷尽性断言：手写的 <c>VoxelErrorCode</c> 枚举与 <c>ContractStatuses</c> 必须覆盖
+    /// <c>engine/abi/native-abi.json</c> 里的**每一条** voxel 错误码，数值与成员名都要与契约一致，
+    /// 且不得多出契约之外的成员。契约追加错误码而这里漏改时，本用例必须变红。
+    /// </summary>
     [Fact]
     public void EveryContractStatusHasAStableManagedErrorCode()
     {
-        for (var status = 1000; status <= 1051; status++)
+        var (statusBase, codes) = LoadContractErrorCodes();
+
+        for (var index = 0; index < codes.Count; index++)
         {
-            Assert.True(Sdk.VoxelErrorCodeMap.TryMap(status, out var code), $"status {status}");
+            var status = statusBase + index;
+            var contractName = codes[index];
+            Assert.True(
+                Sdk.VoxelErrorCodeMap.TryMap(status, out var code),
+                $"contract error code '{contractName}' (status {status}) has no named managed member");
+            Assert.False(
+                code == Sdk.VoxelErrorCode.Unknown,
+                $"contract error code '{contractName}' (status {status}) collapsed into VoxelErrorCode.Unknown");
             Assert.Equal(status, Sdk.VoxelErrorCodeMap.ToStatus(code));
+            Assert.Equal(Pascal(contractName), code.ToString());
         }
+
+        var namedMembers = Enum.GetValues<Sdk.VoxelErrorCode>()
+            .Where(member => member != Sdk.VoxelErrorCode.Unknown)
+            .ToArray();
+        Assert.Equal(codes.Count, namedMembers.Length);
     }
+
+    /// <summary>
+    /// 读取公共契约里的 <c>voxel.errorStatusBase</c> 与 <c>voxel.errorCodes</c>（唯一真值）。
+    /// </summary>
+    private static (int StatusBase, IReadOnlyList<string> Codes) LoadContractErrorCodes()
+    {
+        var definitionPath = LocateAbiDefinition();
+        using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(definitionPath));
+        var voxel = document.RootElement.GetProperty("voxel");
+        var statusBase = voxel.GetProperty("errorStatusBase").GetInt32();
+        var codes = voxel.GetProperty("errorCodes")
+            .EnumerateArray()
+            .Select(entry => entry.GetString()!)
+            .ToArray();
+
+        Assert.NotEmpty(codes);
+        return (statusBase, codes);
+    }
+
+    private static string LocateAbiDefinition()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            var candidate = Path.Combine(directory.FullName, "engine", "abi", "native-abi.json");
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            directory = directory.Parent;
+        }
+
+        throw new FileNotFoundException(
+            $"engine/abi/native-abi.json not found above {AppContext.BaseDirectory}");
+    }
+
+    private static string Pascal(string contractErrorCode)
+        => string.Concat(contractErrorCode
+            .Split('_', StringSplitOptions.RemoveEmptyEntries)
+            .Select(part => char.ToUpperInvariant(part[0]) + part[1..]));
 
     [Fact]
     public void UnregisteredBlockTypeUsesStableStatus1051()

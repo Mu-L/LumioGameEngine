@@ -108,6 +108,8 @@ public enum VoxelErrorCode
     UnknownBehaviorTemplate = Native.VoxelErrorCodes.UnknownBehaviorTemplate,
     CellReadMissingPresence = Native.VoxelErrorCodes.CellReadMissingPresence,
     UnregisteredBlockType = Native.VoxelErrorCodes.UnregisteredBlockType,
+    WriteBatchPartiallyApplied = Native.VoxelErrorCodes.WriteBatchPartiallyApplied,
+    BaseRevisionOnFullEncoding = Native.VoxelErrorCodes.BaseRevisionOnFullEncoding,
 }
 
 public static class VoxelErrorCodeMap
@@ -166,6 +168,8 @@ public static class VoxelErrorCodeMap
         Native.VoxelErrorCodes.UnknownBehaviorTemplate,
         Native.VoxelErrorCodes.CellReadMissingPresence,
         Native.VoxelErrorCodes.UnregisteredBlockType,
+        Native.VoxelErrorCodes.WriteBatchPartiallyApplied,
+        Native.VoxelErrorCodes.BaseRevisionOnFullEncoding,
     };
 
     public static bool TryMap(int status, out VoxelErrorCode code)
