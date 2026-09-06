@@ -1,6 +1,6 @@
 ---
 name: development-verification
-description: 开发期按影响范围验证、固定跨仓输入和真实 Native/DS/Bot 证据入口；开发或修改 CI 时查
+description: 开发期三档验证入口（tools / managed / integration）与依赖仓跟 main 的规则——开发、改 CI 或收口前查
 metadata:
   type: doc
   status: 实施中
@@ -14,29 +14,27 @@ metadata:
 
 从 SDK 仓根目录运行。所有入口需要 Node.js 22.16.0 或兼容的 Node 22；托管测试需要 .NET 10；集成需要 Rust 工具链、.NET 10、对应原生编译工具和五个实现仓。
 
-| 命令 | 作用 | 是否需要其他仓 |
-| --- | --- | --- |
-| `node eng/test.mjs tools` | Node 回归测试、wire 验证、隔离生成物一致性、spec-lint | 否 |
-| `node eng/test.mjs managed` | Loader 单测和错包/短表反例 | 否 |
-| `node eng/test.mjs integration` | Native Rust 测试、真实 C# Native 装载、Rust DS + CoreCLR + Runtime + C# Bot 两轮闭环 | 是 |
-| `node eng/test.mjs all` | 顺序执行以上检查 | 是 |
-| `node eng/dev-build.mjs` | 增量构建 Native，输出本次确切产物路径和构建身份 | NativeCore、Voxel |
-| `node eng/dev-run.mjs` | 构建当前 Native/Runtime/Server/Foundation Bot，验证装载并正常关闭 DS | 是 |
-| `node eng/dev-run.mjs --keep-running` | 构建后保留 DS，Ctrl-C 请求正常关闭 | 是 |
+| 命令 | 作用 | 是否需要其他仓 | CI 作业 |
+| --- | --- | --- | --- |
+| `node eng/test.mjs tools` | Node 回归测试、wire 验证、隔离生成物一致性、spec-lint | 否 | `tools`，每次都跑 |
+| `node eng/test.mjs managed` | Loader 单测和错包/短表反例 | 否 | `managed`，每次都跑 |
+| `node eng/test.mjs integration` | Native Rust 测试、真实 C# Native 装载、Rust DS + CoreCLR + Runtime + C# Bot 两轮闭环 | 是 | `integration`（ubuntu + windows），每次都跑 |
+| `node eng/test.mjs all` | 顺序执行以上检查 | 是 | — |
+| `node eng/dev-build.mjs` | 增量构建 Native，输出本次确切产物路径和构建身份 | NativeCore、Voxel | — |
+| `node eng/dev-run.mjs` | 构建当前 Native/Runtime/Server/Foundation Bot，验证装载并正常关闭 DS | 是 | — |
+| `node eng/dev-run.mjs --keep-running` | 构建后保留 DS，Ctrl-C 请求正常关闭 | 是 | — |
 
 现有 `dev-build.sh/.ps1`、`dev-run.sh/.ps1` 只负责参数转发，不再维护四套构建/启动实现。PowerShell 保留 `-VoxelRoot`、`-NativeCoreRoot`、`-KeepRunning`，新增 `-Verify` 对应 `--verify`。纯文档改动执行 tools，不需要安装 .NET 或检出五个依赖。
 
 生成物过期时，先运行 `node eng/generate-abi.mjs`，审阅生成 diff 后再测。检查命令在临时目录生成，不改写开发工作区；不通过“先提交再测试”解除检查。
 
-## 精确依赖与候选组合
+## 依赖仓跟 main
 
-`eng/workspace-lock.json` 只记录五个依赖仓的精确 Git SHA，不是冻结公共 API 的 Baseline。初始值是本次实施时观察到的主线提交，只有相应 CI 通过后，才有资格称为验证过的组合。
+五个依赖仓 `LumioNativeCore`、`LumioVoxelEngine`、`LumioGameRuntime`、`LumioServer`、`LumioClient` 一律跟各自 `main`：CI 直接 checkout 各仓默认分支，本地默认取同级目录的当前状态。不钉 SHA、不维护锁文件、不做候选组合选择；跨仓改动把 CI 弄红了当天修，不靠钉旧版本绕过。
 
-CI 按该文件 checkout；本仓按本次 PR 的实际测试提交 checkout。缺失基准、初次 push 或 diff 失败时保守运行完整集成。未知改动路径也进入集成；重命名的旧、新路径均纳入判断。
+本地允许用 `NATIVE_CORE_ROOT`、`VOXEL_ROOT`、`LumioRuntimeRoot`、`LumioServerRoot`、`LumioClientRoot` 指定候选 worktree；工具不会自动 checkout、reset 或修改其他仓。
 
-本地默认使用同级 `LumioNativeCore`、`LumioVoxelEngine`、`LumioGameRuntime`、`LumioServer`、`LumioClient`。允许用 `NATIVE_CORE_ROOT`、`VOXEL_ROOT`、`LumioRuntimeRoot`、`LumioServerRoot`、`LumioClientRoot` 指定候选 worktree；工具不会自动 checkout、reset 或修改其他仓。CI 中实际依赖 SHA 必须与锁文件一致。跨仓候选可在 PR 中更新这份锁文件进行组合验证，但本改动不取消现有下游 main 的契约准入制度，不自动合入其他仓。
-
-工具记录实际源码 SHA、dirty 标志、Native 构建参数、工具链输出以及本次 Server/Runtime/Bot 文件 SHA。源码可快速变化，但“测试用了什么”不能浮动。Rust stable 和 .NET 10.0.x 仍由安装器解析；证据记录实际版本，这不是完全密闭的可重现工具链保证。
+`verification.json` 仍记录本次实际用到的每仓 SHA 与 dirty 标志、Native 构建参数、工具链输出以及本次 Server/Runtime/Bot 文件 SHA 作为证据。源码可快速变化，但“测试用了什么”必须可回溯。Rust stable 和 .NET 10.0.x 仍由安装器解析；证据记录实际版本，这不是完全密闭的可重现工具链保证。
 
 ## 构建与装载
 
@@ -50,7 +48,7 @@ Loader 检查三件不同的事：sidecar ABI 必须匹配编译进消费端的 
 
 ## CI 与证据
 
-CI 分为 plan、tools、managed、integration 和稳定的 `required-gate`。不使用 workflow 级路径过滤隐藏必选检查。被选中的 lane 必须实际 success；skipped、cancelled、failure、缺失都不能冒充通过。未选中的 lane 允许明确 skipped。是否把 `required-gate` 设为分支保护必选项由仓库 Owner 管理，本改动不修改 GitHub 保护设置。
+CI 只有 tools、managed、integration 三个作业，每个 PR / push 都全部跑，不按改动路径选择、不设汇总门禁作业。三个作业全绿才算通过；skipped、cancelled、failure 都不能冒充通过。哪些作业设为分支保护必选项由仓库 Owner 管理。
 
 集成证据保存在 `.run/verification/run-*/`。失败不删除日志。`verification.json` 区分 PASS、FAIL、BLOCKED_ENV，并保存实际输入与产物身份；CI 的 artifact 上传即使失败也执行，但没有文件不等于测试通过。
 
@@ -60,6 +58,6 @@ CI 分为 plan、tools、managed、integration 和稳定的 `required-gate`。�
 
 ## 完成声明
 
-模块测试通过、边界联测通过、SDK 组合可用、完整游戏可交付是不同结论。环境不可用要记录 BLOCKED_ENV；测试替身、单次 Ping、静态结构检查、手工报告均不能替代真实供应方联测。不得自动刷新 Golden、删除断言或放宽必跑集合来修复红灯。验证器、选择器、ABI/Loader 和 Golden 变更必须接受审查。
+模块测试通过、边界联测通过、SDK 组合可用、完整游戏可交付是不同结论。环境不可用要记录 BLOCKED_ENV；测试替身、单次 Ping、静态结构检查、手工报告均不能替代真实供应方联测。不得自动刷新 Golden、删除断言或放宽必跑集合来修复红灯。验证器、ABI/Loader 和 Golden 变更必须接受审查。
 
 当前仍待后续实施：全量 Root Binding 单源生成清理、ABI/行为 Hash 分离、完整世界首差异诊断、长回放及发行矩阵。不得将本次基础验证链的落地写成这些工作全部完成。

@@ -60,20 +60,23 @@ export function buildNative({ root, nativeCoreRoot, voxelRoot, configuration = '
   const abiHash = sha(readFileSync(join(root, 'engine/abi/native-abi.json')));
   const buildRoot = join(root, '.build');
   mkdirSync(buildRoot, { recursive: true });
+  // Mirror the engine/ layout: sdk-native reaches engine/abi via include_str!("../../../../abi/...").
   const workspace = mkdtempSync(join(buildRoot, 'native-workspace-'));
-  cpSync(join(root, 'engine/native'), workspace, {
+  const nativeWorkspace = join(workspace, 'native');
+  cpSync(join(root, 'engine/native'), nativeWorkspace, {
     recursive: true, filter: path => !excluded.has(basename(path)),
   });
-  const sdkManifest = join(workspace, 'modules/sdk-native/Cargo.toml');
+  cpSync(join(root, 'engine/abi'), join(workspace, 'abi'), { recursive: true });
+  const sdkManifest = join(nativeWorkspace, 'modules/sdk-native/Cargo.toml');
   const manifest = readFileSync(sdkManifest, 'utf8');
   const rewritten = rewriteDependencyRoots(manifest, { LumioNativeCore: nativeCoreRoot, LumioVoxelEngine: voxelRoot });
   if (rewritten === manifest) throw new Error('SDK native manifest did not resolve any external dependency roots.');
   writeFileSync(sdkManifest, rewritten);
   const targetDir = join(buildRoot, 'native-target');
-  const nativeManifest = join(workspace, 'Cargo.toml');
+  const nativeManifest = join(nativeWorkspace, 'Cargo.toml');
   const env = { ...process.env, LUMIO_BUILD_ID: buildId, LUMIO_ABI_HASH: abiHash };
   command('cargo', ['build', '--locked', '--manifest-path', nativeManifest, '-p', 'lumio-engine-native', '--target', target,
-    '--target-dir', targetDir, ...(configuration === 'release' ? ['--release'] : [])], { cwd: root, env, log: join(workspace, 'build.log') });
+    '--target-dir', targetDir, ...(configuration === 'release' ? ['--release'] : [])], { cwd: root, env, log: join(nativeWorkspace, 'build.log') });
   if (sourceFingerprint(roots) !== sourceSha256) throw new Error('Inputs changed during native build. Retry in an isolated worktree; no artifact was published.');
   const nativeName = process.platform === 'win32' ? 'lumio_engine_native.dll' : 'liblumio_engine_native.so';
   const builtPath = join(targetDir, target, configuration, nativeName);

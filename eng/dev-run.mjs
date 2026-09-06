@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url';
 import { buildNative } from './dev-build.mjs';
 import { command, startLogged, assertAlive, waitExit, forceCleanup } from './process-tools.mjs';
 import { readNdjson, until, openBrowserPeer, verifyHelloEvidence } from './hello-smoke.mjs';
-import { validateLock } from './verification-policy.mjs';
 
 const hashFile = path => createHash('sha256').update(readFileSync(path)).digest('hex');
 function json(path) { return JSON.parse(readFileSync(path, 'utf8')); }
@@ -50,13 +49,9 @@ function hostFxr(root) {
 }
 
 function sources(roots, root) {
-  const lock = validateLock(json(join(root, 'eng/workspace-lock.json')));
   return Object.fromEntries(Object.entries({ LumioGameEngine: root, ...roots }).map(([name, path]) => {
     const commit = command('git', ['rev-parse', 'HEAD'], { cwd: path }).trim();
     const dirty = command('git', ['status', '--porcelain'], { cwd: path }).trim() !== '';
-    if (process.env.CI === 'true' && name in lock.repositories && commit !== lock.repositories[name]) {
-      throw new Error(`Locked dependency mismatch: ${name}: ${commit} != ${lock.repositories[name]}`);
-    }
     return [name, { commit, dirty, path }];
   }));
 }

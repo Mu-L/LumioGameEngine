@@ -197,6 +197,8 @@ const linkScanFiles = [
 for (const file of linkScanFiles) {
   for (const link of mdLinks(file)) {
     const target = resolve(dirname(file), link)
+    // 指向仓根之外(兄弟仓)的链接不查存在性:CI 只检出本仓
+    if (!(target === ROOT || target.startsWith(ROOT + sep))) continue
     if (!existsSync(target)) err(file, `悬空链接:${link}`)
   }
 }
