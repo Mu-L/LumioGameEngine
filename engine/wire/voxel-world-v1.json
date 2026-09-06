@@ -34,7 +34,8 @@
       "玩法权限、连接与会话（属 Host 与玩法契约）",
       "贴图、着色器与美术资产（材质类只管大类行为，不管贴图）",
       "容器规则、战利品生成、权限与距离校验（属 ECS 与玩法契约）",
-      "物理查询的 C 函数签名与结构布局（语义在本契约，签名属 engine/abi/native-abi.json）"
+      "物理查询的 C 函数签名与结构布局（语义在本契约，签名属 engine/abi/native-abi.json）",
+      "非体素物体（角色 / NPC / 掉落物）的碰撞与命中判别（v1 不支持，见 physicsQuery.nonVoxelBodies；它们是实体，归 ECS 与玩法契约）"
     ]
   },
   "layering": {
@@ -514,7 +515,10 @@
       "noRotation": "需要旋转包围盒时，调用方自己取一个能包住它的 AABB 传进来，不得在契约之外自造姿态表示",
       "inlineByValue": "形状与位姿必须按值内联进请求结构，不得退化成指向未声明布局的裸指针——指针的目标布局若不在契约里，四方就无法一致地读同一份数据，生命周期与对齐还得各实现自己猜",
       "shapeSetIsClosed": "v1 的形状集合到此为止（只有 Aabb）。新增形状是契约变更，须开 ADR 并同步 ABI，不得由实现方私自扩展",
-      "degenerateShape": "任一 halfExtents 分量为 0、负数或非有限值即非法请求，由调用方保证；体素侧不得把退化盒静默当成一个点，也不得静默当成 Miss"
+      "degenerateShape": "任一 halfExtents 分量为 0、负数或非有限值（NaN / +Inf / -Inf）即退化盒，是非法请求：调用方不得发出，体素侧必须当场拒绝并返回 degenerate_query_shape，不得静默当成一个点（返回 Hit），也不得静默当成 Miss。",
+      "degenerateShapeIsRejectedNotUndefined": "「由调用方保证」是调用方的义务，不豁免被调方的检测义务——v1 把退化盒定为**被调方必须检测的显式拒绝**，不是未定义行为。留成未定义行为的代价是实测过的：同一个 halfExtents = 0 的请求，盒心落在整数格边界上被算成空区间返回 Miss、盒心落在格心被算成一格返回 Hit——**同一个非法请求因几何位置被分成两种结局，而这两种恰好是本条明令禁止的那两种**。何况四方各自实现时两端还会得出不同结局，直接违背 determinism。",
+      "degenerateShapeCheckedBeforeTraversal": "检测发生在任何遍历之前：三个 halfExtents 分量逐一校验有限且严格大于 0，任一不通过就直接返回 degenerate_query_shape，不写任何结果字段。**退化盒不是第四种结局**——它不返回 Hit / Miss / Unresolved 中的任何一个，包括 Unresolved：Unresolved 只在遍历中遇到未就位 Section 时才产生，而退化请求根本走不到遍历。",
+      "degenerateShapeAppliesTo": "本条约束 sweep 与 overlap 这两种带形状的查询；raycast 不带形状，不受本条约束。"
     },
     "queries": {
       "raycast": {
@@ -530,7 +534,13 @@
       "sweep": {
         "input": "AABB（center 与 halfExtents）、本帧位移、材质类过滤掩码",
         "output": "是否碰撞、可行进比例（0~1）、碰撞点、面法线、命中格坐标与 BlockId；或未决",
-        "note": "只回答会不会撞、撞在哪；怎么响应由调用方决定"
+        "note": "只回答会不会撞、撞在哪；怎么响应由调用方决定",
+        "travelFraction": {
+          "hit": "Hit 时是可行进比例，取值 0~1；把它乘以本帧位移就走到接触点。",
+          "miss": "Miss 时必须是 **1.0**——没有任何阻挡，整段位移都走得通，所以「可行进比例」就是全程。**不得写 0.0**：0.0 的含义是一步也走不动，调用方会把角色原地钉死在一片完全空旷的地方。",
+          "unresolved": "Unresolved 时**不给可行进比例**：答不了就没有比例可言。调用方不得读该字段，更不得把它当成 0 或 1 用；该走的是挂起 / 保守处理 / 请求加载三条路之一（见 resolution.unresolved）。",
+          "whyNotZeroDefault": "结构清零后 travel_fraction 的默认值恰好是 0.0，与「一步也走不动」同形——所以 Miss 的 1.0 必须由实现显式写出来，不能靠默认值兜底，否则「没撞上」与「贴着墙动不了」在字节上无法区分。"
+        }
       }
     },
     "resolution": {
@@ -575,14 +585,27 @@
       "source": "官方方块目录 blockCatalog 的 materialClass 一列——即 LumioConfig 编译出的同一份配表，不是查询实现里的第二份表",
       "whyNotARootSlot": "目录不是逐次查询的输入，而是世界的构造状态。世界句柄已经是每个查询的第一个参数，再给根表加一个目录槽等于同一份数据开两条入口，多一条就多一处能对不上的地方",
       "whyNotAQueryParameter": "每次查询都带一遍目录会让同一帧内两次查询有机会看到两份表，直接违背 determinism",
-      "resolvedBeforeQueryable": "世界在能被查询之前必须已解析出完整的 BlockType → 材质类映射；没有注入目录的世界不得回答任何查询",
+      "resolvedBeforeQueryable": "世界在能被查询之前必须已解析出完整的 BlockType → 材质类映射；没有注入目录的世界不得回答任何查询，三种查询一律以 **collision_behavior_not_from_material_table** 拒答。**不是 unknown_material_class**：那个码已经绑死在「掩码触碰保留位」（filter.materialMask.reservedBitsMustBeZero）与「单块解析不出材质类」（noBuiltInFallback）两个语义上，这两件事都能在**有表**的世界里单独到达；再拿它兼表示「整张表都没注入」，调用方就无法分辨到底是哪一件事。",
       "noBuiltInFallback": "不得回落到实现内置的默认表，也不得把解析不出材质类的方块当作不阻挡；解析不出即 unknown_material_class",
       "immutableWithinTick": "同一 Tick 内这张表不得变更，否则同一帧的两次查询会得到不同结果",
       "testHelpersAreNotAPath": "实现仓的测试助手直接构造材质表只是测试便利，不构成真实消费方的注入路径；生产路径只有创建世界时注入这一条"
     },
     "determinism": "同一份世界、同一组输入，服务器与客户端必须得到同一个结果；预测与对账建立在这条上。",
     "readOnly": "查询不得改变世界的任何一格；任何写入必须走 prepare/commit 的权威路径。",
-    "nonVoxelBodies": "角色、NPC、掉落物等非体素物体单独注册进检测世界，与地形一起参与查询；命中结果需能区分命中的是方块还是注册物体。",
+    "dataSource": {
+      "statement": "物理查询只从**已发布的不可变切面**取数：查询发起那一刻已经发布的那一份 Section 集合，就是这次查询能看见的全部世界。",
+      "neverRequestsLoad": "查询**永不请求加载**、不触发流式调度、不把任何 Section 推进就绪——切面里没有的 Section 一律是 Unresolved。要它就位只有两条路：等改动层把它派发到 Ready，或者用区域 pin 声明它常驻（residency.pinnedRegions）。",
+      "whyPublishedCut": "因为两端必须同结果（determinism）。客户端只可能拿到已发布的数据；服务端若允许查询看见尚未发布的写入，同一帧同一条射线两端就会得出不同结局，预测与对账当场失效。",
+      "differsFromBlockRead": "**block_read_cell / block_read_box / block_read_column 与物理查询是两个取数面，不是同一个。** 读接口按请求的坐标问世界的当前状态，物理查询只看已发布切面。后果是可观测的：**同一帧、同一个坐标，block_read_cell 可以返回 presence = Ready，而 raycast / sweep / overlap 对同一格返回 Unresolved**——那一格已经在世界里，但还没进入本次查询所用的那份发布切面。这不是任一侧的缺陷，是两个面的定义差异。",
+      "unresolvedMeansNotInTheCut": "物理查询的 Unresolved 只有一个含义：产生它的那个 Section 不在本次查询所用的发布切面里。它**不区分**「从未加载」与「已加载但尚未发布」，v1 也不提供区分手段。调用方不得用 block_read_cell 的 presence 去反推物理 Unresolved 的原因，更不得据此推翻它继续通行——那就退化成被 query.unresolved-is-not-air 明令禁止的那件事。要在同一 tick 内拿到确定结果，用 pin。",
+      "sameCutWithinOneQuery": "一次查询自始至终只用一份切面，不得在遍历中途换用更新的切面，否则同一条射线的前半段与后半段会看到两个世界。"
+    },
+    "nonVoxelBodies": {
+      "v1": "**v1 不支持。** 三种查询只回答体素：每一条命中结果说的都是「哪一格、格里是什么 BlockId」，没有第二种命中目标，也没有任何注册非体素物体的入口。",
+      "whyNotInV1": "两条独立理由。① **无法满足**：原条款要求「命中结果需能区分命中的是方块还是注册物体」，而 ABI 的 raycast_result / sweep_result / overlap_result 三个结构里没有任何 target 判别字段，Native 侧也没有任何 register_body 之类的注册面——四方谁都拿不到这个区分位，条款等于一条无人能满足的空话。② **归属错了**：角色、NPC、掉落物按世界模型是**实体**，位姿与碰撞体归 ECS；把它们注册进体素世界等于在体素侧再开一份实体存储，正是 boundary.noVoxelSideBusinessStore 禁止的第二份真相。",
+      "callerComposes": "调用方自己合成：地形那半问体素查询，实体那半问 ECS 侧的实体碰撞，取两者中先发生的那个。**这不违反 boundary.noSecondPhysicsSurface**——那条禁的是消费方再造一份**地形**检测，不是禁止调用方把地形结果与实体结果合起来用。",
+      "reopeningCondition": "要在引擎面统一回答「撞的是方块还是物体」，须**开 ADR**：至少要给三个 result 结构各加一个 target 判别字段并同步 ABI 重生成，并在契约里定义非体素物体的注册面与其生命周期。v1 不留占位字段、不留半截入口——留着的占位字段会被当成「快好了」。"
+    },
     "costProperty": "查询耗时随射线经过的格数增长，与世界总方块数无关。",
     "noBatchInV1": "v1 不提供批量查询接口。一个角色一帧约 3~10 次扫掠加若干射线，十个本地实体约 100 次；按跨边界调用 1 微秒估，最坏 100 微秒，占一帧预算不到 1%。实测成为热点再回头。",
     "noSpatialTree": "不为地形建 AABB 树或八叉树——密铺规则体的空间索引就是坐标本身。"
@@ -826,7 +849,8 @@
     "cell_read_missing_presence",
     "unregistered_block_type",
     "write_batch_partially_applied",
-    "base_revision_on_full_encoding"
+    "base_revision_on_full_encoding",
+    "degenerate_query_shape"
   ],
   "rules": [
     {
@@ -1188,6 +1212,12 @@
       "text": "驻留预算必须由宿主角色以 residentSectionBudget 显式声明，量纲是 Section 数；未声明时预算按 0 处理，任何 pin 声明都超预算，平台也不得在运行时下调该数字来制造同一结果",
       "enforcedBy": "receiver",
       "onViolation": "residency_pin_exceeds_budget"
+    },
+    {
+      "id": "query.degenerate-shape-is-rejected",
+      "text": "sweep 与 overlap 的 halfExtents 三个分量必须有限且严格大于 0；退化盒在遍历之前当场拒绝，不得静默当成一个点（Hit），也不得静默当成 Miss",
+      "enforcedBy": "receiver",
+      "onViolation": "degenerate_query_shape"
     }
   ],
   "testCases": [
@@ -2187,6 +2217,69 @@
       "when": "玩法在该区域内开始爆炸结算",
       "expectedRejection": "pin_region_not_ready",
       "then": "拒绝；就绪前读到 Pending 是合法的，玩法必须等就绪信号，否则同一次爆炸在两端结算出不同结果",
+      "validatorCheck": false
+    },
+    {
+      "name": "degenerate_box_on_cell_boundary_silently_missed",
+      "class": "query",
+      "violates": "query.degenerate-shape-is-rejected",
+      "given": "一次 overlap：center = (5.0, 5.0, 5.0)（正落在整数格边界上），halfExtents = (0.0, 0.0, 0.0)，material_mask = 1",
+      "when": "实现不检测退化，照常算格区间；区间算空，返回 resolution = Miss、actual_count = 0",
+      "center": [
+        5.0,
+        5.0,
+        5.0
+      ],
+      "halfExtents": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "observedResolution": "Miss",
+      "expectedRejection": "degenerate_query_shape",
+      "then": "拒绝该请求；返回 Miss 正是本契约明令禁止的「静默当成 Miss」——调用方会以为那片区域确实没有方块",
+      "validatorCheck": false
+    },
+    {
+      "name": "degenerate_box_at_cell_center_silently_hits",
+      "class": "query",
+      "violates": "query.degenerate-shape-is-rejected",
+      "given": "同一个退化盒只换位置：center = (5.5, 5.5, 5.5)（落在格心），halfExtents = (0.0, 0.0, 0.0)，material_mask = 1，该格是 Solid",
+      "when": "实现不检测退化，照常算格区间；区间退化成一格，返回 resolution = Hit、actual_count = 1",
+      "center": [
+        5.5,
+        5.5,
+        5.5
+      ],
+      "halfExtents": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "observedResolution": "Hit",
+      "expectedRejection": "degenerate_query_shape",
+      "then": "拒绝该请求；返回 Hit 是被禁止的另一半「静默当成一个点」。与上一条对照：同一个退化请求只因盒心位置不同就得出两种结局，两种都是禁止的——**只堵一半会漏掉另一半**，所以两半共用一个在遍历之前生效的拒绝",
+      "validatorCheck": false
+    },
+    {
+      "name": "degenerate_box_with_negative_half_extent_swept",
+      "class": "query",
+      "violates": "query.degenerate-shape-is-rejected",
+      "given": "一次 sweep：center = (5.0, 5.0, 5.0)，halfExtents = (-0.5, 0.5, 0.5)，displacement = (2.0, 0.0, 0.0)",
+      "when": "实现不检测退化，照常算扫掠区间；x 轴上 min > max，区间算空，返回 resolution = Miss、collided = 0、travel_fraction = 1.0",
+      "center": [
+        5.0,
+        5.0,
+        5.0
+      ],
+      "halfExtents": [
+        -0.5,
+        0.5,
+        0.5
+      ],
+      "observedResolution": "Miss",
+      "expectedRejection": "degenerate_query_shape",
+      "then": "拒绝该请求；负半长与 0 半长、NaN 半长是同一类非法输入，不得因为「算出来是空区间」就当成一次正常的 Miss 回答。扫掠尤其危险：Miss 携带 travel_fraction = 1.0，调用方会把整段位移当成畅通无阻",
       "validatorCheck": false
     }
   ],
