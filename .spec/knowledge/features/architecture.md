@@ -123,7 +123,7 @@ Server 和 Client 是 SDK 的消费者和产品 Host，不作为 SDK 内部实�
 
 ## 6. 预上线质量边界
 
-- Native 或托管内部实现改动：目标仓单元测试 + SDK 构建 + 双端加载证明。
+- Native 或托管内部实现改动：目标仓单元测试 + SDK 构建 + 双端加载证明。验证入口与 CI 作业的唯一口径是 [`development-verification.md`](../standards/development-verification.md)（ADR-068）：依赖仓跟 main 不钉号、红当天修、三作业每次都跑。
 - ABI/API 改动：修改唯一 ABI 定义，重新生成 Binding，并重编直接消费者；预上线允许破坏式变化。
 - 只有进入正式硬化阶段，才启用完整契约、失败矩阵、供应链证据、兼容策略和发布审查。
 - 旧 Baseline、Schema、Fixture、生成物和镜像不属于当前主线开发入口；迁移前 tag 与 Git 历史是唯一留档。

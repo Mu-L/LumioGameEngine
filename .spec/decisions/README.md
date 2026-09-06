@@ -88,6 +88,7 @@
 | [ADR-065](ADR-065-dual-transform-discussion.md) | 双 Transform 持续讨论记录：两个基础组件均归 Runtime、已确认原则与移动设计审阅稿；关联 R-00461 / R-00470，尚未开始实现 | Draft |
 | [ADR-066](ADR-066-voxel-owner-rulings.md) | R-00434 体素 Owner 裁决：BlockType=2/3 typed sentinel、解析域 hybrid 与 unregistered_block_type、目录行结构优先校验 | Draft |
 | [ADR-067](ADR-067-browser-client-prediction-dotnet-wasm.md) | 浏览器客户端预测走 .NET WebAssembly 装载 Runtime 客户端模块（桌面浏览器）；手机浏览器待真机数据；落地卡 = R-00470 AC06，Runtime 义务落 R-00466 | Draft |
+| [ADR-068](ADR-068-development-verification-follow-main.md) | 开发期验证：五个依赖仓跟 main 不钉号、红当天修；CI 三作业每次都跑、无路径选择与 gate；验证规则只保留 `development-verification.md` 一套；否决评审 §8–§10 锁文件 / required-gate | Accepted |
 
 旧制度的 `DECISIONS_PENDING` 待决台账已随 `docs/` 一并删除（见 git 历史）；Living Architecture 下未定项直接落 ADR 或任务卡，不再另设台账。
 
