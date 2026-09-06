@@ -12,6 +12,7 @@ public enum NativeEngineLoadFailure
     ApiTableNull,
     AbiMismatch,
     BuildIdMismatch,
+    BinaryHashMismatch,
 }
 
 public sealed class NativeEngineLoadException : Exception
@@ -84,8 +85,11 @@ public sealed class NativeEngineLease : IDisposable
     }
 
     public string NativePath { get; }
+
     public string BuildId { get; }
+
     public string AbiHash { get; }
+
     public string BinarySha256 { get; }
 
     internal NativeEngineLoader.RootApi Api => _api;
@@ -289,20 +293,69 @@ public static class NativeEngineLoader
         public nint DestroyClrHost;
     }
 
+    internal static RootApi ReadRootApi(nint apiAddress)
+    {
+        if (apiAddress == 0)
+        {
+            throw new NativeEngineLoadException(NativeEngineLoadFailure.ApiTableNull, "Native engine entry returned a null API table.");
+        }
+
+        // Read only the fixed two-word header before trusting the declared size.
+        // Reading RootApiPrefix first could already read past a short table.
+        var version = unchecked((uint)Marshal.ReadInt32(apiAddress));
+        var size = unchecked((uint)Marshal.ReadInt32(apiAddress, sizeof(uint)));
+        if (version != AbiVersion || size < Marshal.SizeOf<RootApiPrefix>())
+        {
+            throw new NativeEngineLoadException(NativeEngineLoadFailure.InvalidNativeImage, "Native engine API table has an invalid version or prefix size.");
+        }
+
+        var prefix = Marshal.PtrToStructure<RootApiPrefix>(apiAddress);
+        if (prefix.Ping == 0 || prefix.CreateClrHost == 0 || prefix.ClrHostCall == 0 || prefix.DestroyClrHost == 0)
+        {
+            throw new NativeEngineLoadException(NativeEngineLoadFailure.InvalidNativeImage, "Native engine API table is missing a required prefix slot.");
+        }
+
+        return prefix.StructSize >= Marshal.SizeOf<RootApi>()
+            ? Marshal.PtrToStructure<RootApi>(apiAddress)
+            : new RootApi
+            {
+                AbiVersion = prefix.AbiVersion,
+                StructSize = prefix.StructSize,
+                AbiHash = prefix.AbiHash,
+                BuildId = prefix.BuildId,
+                Ping = prefix.Ping,
+                CreateClrHost = prefix.CreateClrHost,
+                ClrHostCall = prefix.ClrHostCall,
+                DestroyClrHost = prefix.DestroyClrHost,
+            };
+    }
+
     public static NativeEngineLease Load(string nativePath, string expectedBuildId, string expectedAbiHash)
+        => LoadVerified(nativePath, expectedBuildId, expectedAbiHash, null);
+
+    private static NativeEngineLease LoadVerified(string nativePath, string expectedBuildId, string expectedAbiHash, string? expectedBinarySha256)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(nativePath);
         ArgumentException.ThrowIfNullOrWhiteSpace(expectedBuildId);
         ArgumentException.ThrowIfNullOrWhiteSpace(expectedAbiHash);
 
+        nativePath = Path.GetFullPath(nativePath);
         if (!File.Exists(nativePath))
         {
-            throw new NativeEngineLoadException(
-                NativeEngineLoadFailure.MissingFile,
-                $"Native engine file does not exist: {nativePath}");
+            throw new NativeEngineLoadException(NativeEngineLoadFailure.MissingFile, $"Native engine file does not exist: {nativePath}");
         }
 
-        var binarySha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(nativePath))).ToLowerInvariant();
+        string binarySha256;
+        using (var stream = File.OpenRead(nativePath))
+        {
+            binarySha256 = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+        }
+        if (expectedBinarySha256 is not null && !string.Equals(binarySha256, expectedBinarySha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new NativeEngineLoadException(NativeEngineLoadFailure.BinaryHashMismatch,
+                $"Native engine SHA-256 {binarySha256} does not match sidecar {expectedBinarySha256}: {nativePath}");
+        }
+
         nint library = 0;
         try
         {
@@ -312,97 +365,58 @@ public static class NativeEngineLoader
             var status = entry(AbiVersion, out var apiAddress);
             if (status != 0)
             {
-                throw new NativeEngineLoadException(
-                    NativeEngineLoadFailure.UnsupportedVersion,
+                throw new NativeEngineLoadException(NativeEngineLoadFailure.UnsupportedVersion,
                     $"Native engine entry rejected ABI version {AbiVersion} with status {status}.");
             }
 
-            if (apiAddress == 0)
-            {
-                throw new NativeEngineLoadException(
-                    NativeEngineLoadFailure.ApiTableNull,
-                    "Native engine entry returned a null API table.");
-            }
-
-            var prefix = Marshal.PtrToStructure<RootApiPrefix>(apiAddress);
-            if (prefix.AbiVersion != AbiVersion
-                || prefix.StructSize < Marshal.SizeOf<RootApiPrefix>()
-                || prefix.Ping == 0
-                || prefix.CreateClrHost == 0
-                || prefix.ClrHostCall == 0
-                || prefix.DestroyClrHost == 0)
-            {
-                throw new NativeEngineLoadException(
-                    NativeEngineLoadFailure.InvalidNativeImage,
-                    "Native engine API table has an invalid version, size, ping, or CLR host slot.");
-            }
-
-            var api = prefix.StructSize >= Marshal.SizeOf<RootApi>()
-                ? Marshal.PtrToStructure<RootApi>(apiAddress)
-                : new RootApi
-                {
-                    AbiVersion = prefix.AbiVersion,
-                    StructSize = prefix.StructSize,
-                    AbiHash = prefix.AbiHash,
-                    BuildId = prefix.BuildId,
-                    Ping = prefix.Ping,
-                    CreateClrHost = prefix.CreateClrHost,
-                    ClrHostCall = prefix.ClrHostCall,
-                    DestroyClrHost = prefix.DestroyClrHost,
-                };
-
+            var api = ReadRootApi(apiAddress);
             var abiHash = Convert.ToHexString(api.AbiHash ?? Array.Empty<byte>()).ToLowerInvariant();
             var buildId = Convert.ToHexString(api.BuildId ?? Array.Empty<byte>()).ToLowerInvariant();
-            if (!string.Equals(abiHash, expectedAbiHash, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(abiHash, expectedAbiHash, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(abiHash, AbiConstants.DefinitionSha256, StringComparison.OrdinalIgnoreCase))
             {
-                throw new NativeEngineLoadException(
-                    NativeEngineLoadFailure.AbiMismatch,
-                    $"Native engine ABI hash {abiHash} does not match {expectedAbiHash}.");
+                throw new NativeEngineLoadException(NativeEngineLoadFailure.AbiMismatch,
+                    $"Native engine ABI {abiHash}, requested ABI {expectedAbiHash}, compiled consumer ABI {AbiConstants.DefinitionSha256} do not match.");
             }
 
             if (!string.Equals(buildId, expectedBuildId, StringComparison.OrdinalIgnoreCase))
             {
-                throw new NativeEngineLoadException(
-                    NativeEngineLoadFailure.BuildIdMismatch,
+                throw new NativeEngineLoadException(NativeEngineLoadFailure.BuildIdMismatch,
                     $"Native engine BuildId {buildId} does not match {expectedBuildId}.");
             }
 
             return new NativeEngineLease(library, api, nativePath, buildId, abiHash, binarySha256, api.Ping);
         }
-        catch (NativeEngineLoadException)
+        catch (Exception ex)
         {
-            if (library != 0)
+            if (library != 0) NativeLibrary.Free(library);
+            if (ex is DllNotFoundException or BadImageFormatException or EntryPointNotFoundException)
             {
-                NativeLibrary.Free(library);
+                throw new NativeEngineLoadException(NativeEngineLoadFailure.InvalidNativeImage,
+                    $"Could not load native engine image {nativePath}.", ex);
             }
-
             throw;
-        }
-        catch (Exception ex) when (ex is DllNotFoundException or BadImageFormatException or EntryPointNotFoundException)
-        {
-            if (library != 0)
-            {
-                NativeLibrary.Free(library);
-            }
-
-            throw new NativeEngineLoadException(
-                NativeEngineLoadFailure.InvalidNativeImage,
-                $"Could not load native engine image {nativePath}.",
-                ex);
         }
     }
 
     public static NativeEngineLease LoadFromBuildInfo(string nativePath)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(nativePath);
+        nativePath = Path.GetFullPath(nativePath);
         var sidecar = NativeBuildInfo.SidecarPath(nativePath);
         if (!File.Exists(sidecar))
         {
-            throw new NativeEngineLoadException(
-                NativeEngineLoadFailure.MissingFile,
+            throw new NativeEngineLoadException(NativeEngineLoadFailure.MissingFile,
                 $"Native engine build-info sidecar does not exist: {sidecar}");
         }
 
         var info = NativeBuildInfo.Read(sidecar);
-        return Load(nativePath, info.BuildId, info.AbiHash);
+        // The producer's own sidecar must not define the consumer's ABI expectation.
+        if (!string.Equals(info.AbiHash, AbiConstants.DefinitionSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new NativeEngineLoadException(NativeEngineLoadFailure.AbiMismatch,
+                $"Sidecar ABI {info.AbiHash} does not match compiled consumer ABI {AbiConstants.DefinitionSha256}.");
+        }
+        return LoadVerified(nativePath, info.BuildId, info.AbiHash, info.BinarySha256);
     }
 }
