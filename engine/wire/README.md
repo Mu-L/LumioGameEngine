@@ -16,7 +16,7 @@
 
 hello-wire 仍是 Hello World 消息形状、字段语义、进程边界与审计词表的唯一真值。消费方不得在实现仓另写一份协议真值。本目录契约是开发态最小契约，不是 Baseline；进入正式硬化阶段时再按治理顺序升级为版本化公共合同。
 
-下游实现仓在对应 C 卡合入 architecture `origin/main` 之后拉取 JSON 消费；解析新信封/端口/查询/定时的生产代码不得早于该合并 SHA 出现在各仓 main。
+下游实现仓在对应 C 卡合入 architecture `origin/main` 之后拉取 JSON 消费；解析新信封/端口/查询/定时的生产代码不得早于该合并 SHA 出现在各仓 main。跨仓验证怎么跑、CI 跑哪些作业，只看 [`development-verification.md`](../../.spec/knowledge/standards/development-verification.md)（ADR-068：依赖仓跟 main 不钉号，红当天修），本文不另写。
 The entity binding/query contract also defines the A2 owner-thread controls:
 `ExpireEntityMessage`, `ResolveBindingMessage`, and `AttributeQueryMessage`
 enter through `WorldManager.Enqueue` and return only through internal

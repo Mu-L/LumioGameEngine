@@ -30,7 +30,7 @@
 - **快速模式(收口白名单,默认优先尝试):** 纯文档 / 纯注释 / 纯配置数据 / 机械套用既有模式 / revert / 生成物随源更新 / 有效 diff < 20 行(去空行注释)——lint + 测试直接收口,交付附一行豁免声明,不派任何 agent。判定须机器可判(文件类型 + diff 行数),拿不准 = 快审。**红线面永不快速**:触碰 `rules/`、鉴权、安全面、可执行配置(如 hooks)的改动至少快审。
 - **审查闭环:** 交付即待审;completed 由主 loop 在 reviewer 通过(或按豁免跳过)后标记;高风险改动审查通过前**不得提交**。
 - **派 worker 三选一:** ① 多个互不依赖任务可并行 ② 改动大到撑爆编排上下文 ③ 需要隔离的干净实现环境。
-- **开发态收口门槛:** `node eng/generate-abi.mjs && powershell -NoProfile -ExecutionPolicy Bypass -File eng/dev-run.ps1`；需要检查 SDK Rust 或 Loader 时再分别运行 `cargo test -p lumio-engine-native` 与对应 `dotnet test`。
+- **开发态收口门槛:** 唯一口径见 [`knowledge/standards/development-verification.md`](knowledge/standards/development-verification.md)（ADR-068）：纯文档 / 单仓改动跑 `node eng/test.mjs tools`；碰 Loader 再加 `node eng/test.mjs managed`；碰 ABI / Native / 宿主链跑 `node eng/test.mjs all`（macOS 上 integration 档为 BLOCKED_ENV，靠 CI）。五个依赖仓跟 main 不钉号，红了当天修。
 - **并行边界与合入:** 任务文件集**互不重叠**才可并行(最小化冲突),重叠必串行;拆解产物按 wave 分批扇出,批间串行。多宿主并存时共享任务真值是 `.spec/tasks/`,宿主内置任务工具只作个人草稿。
   - **实现方隔离:** 并行 worker 各在独立 git worktree 实现(Claude Code 用 Agent 工具的 worktree 隔离)。
   - **审查方隔离:** reviewer 审实现方交付环境相对基线的完整 diff,**且自己的验证也必须跑在独立环境里**——`git worktree` 或只读快照(`git archive` 物化)皆可,口径与 [`dispatch.md`](knowledge/standards/dispatch.md)、[`reviewer.agent.md`](agents/reviewer.agent.md) 一致;并发编辑中的仓优先快照(worktree 会向仓写注册记录,见 `lessons.md`)。**主 loop 派审后不得在同一环境跑构建**——同环境并发构建会互锁(MSBuild 节点复用 + `obj/` 争用,.NET 侧已实测;node / python 栈无此问题),两侧都会假失败。
