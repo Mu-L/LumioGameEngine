@@ -179,7 +179,7 @@
   "voxel": {
     "contractId": "lumio.voxel-world.v1",
     "source": "engine/wire/voxel-world-v1.json",
-    "sourceSha256": "d05dbc52896c535529937ec41d90539f41359a45b42cf05b6a589ef57609939d",
+    "sourceSha256": "523aec6e590d8c78f8a15fc4a67e98a80b19ea1ba5a9ced28fdf482d44e48fc9",
     "sourceCounts": { "errors": 54, "rules": 60, "cases": 115 },
     "constants": {
       "blockId": {
@@ -219,6 +219,18 @@
         "values": { "FullCube": 0, "Liquid": 1 },
         "exhaustive": true,
         "unknownValueError": "unknown_behavior_template"
+      },
+      "material_mask": {
+        "type": "u32",
+        "bitOrder": "Bit order follows materialClasses.v1Scope.classes declaration order, from the least significant bit, one class per bit.",
+        "bits": { "Solid": 0, "Liquid": 1 },
+        "values": { "Solid": 1, "Liquid": 2 },
+        "assignedBitCount": 2,
+        "combining": "Classes combine with bitwise OR; Solid or Liquid is 3.",
+        "zeroMatchesNothing": "Mask 0 matches no material class and resolves to Miss (Unresolved still outranks Miss). It is neither select-all nor an error; select-all is written out as 3.",
+        "reservedBitsMustBeZero": "Bit 2 and above are unassigned and must be zero; any set reserved bit is unknown_material_class.",
+        "appendOnly": "A new material class takes the next higher bit; assigned bits are never reordered.",
+        "unknownValueError": "unknown_material_class"
       }
     },
     "layout": {
@@ -258,9 +270,9 @@
         "world_point": { "size": 12, "offsets": { "x": 0, "y": 4, "z": 8 } },
         "raycast_request": { "size": 32, "offsets": { "origin": 0, "direction": 12, "max_distance": 24, "material_mask": 28 } },
         "raycast_result": { "size": 60, "offsets": { "resolution": 0, "unresolved_section": 4, "hit_cell": 16, "block_id": 28, "hit_point": 32, "hit_normal": 44, "travel_distance": 56 } },
-        "sweep_request": { "size": 32, "offsets": { "shape": 0, "pose": 8, "displacement": 16, "material_mask": 28 } },
+        "sweep_request": { "size": 40, "offsets": { "center": 0, "half_extents": 12, "displacement": 24, "material_mask": 36 } },
         "sweep_result": { "size": 64, "offsets": { "resolution": 0, "collided": 4, "travel_fraction": 8, "unresolved_section": 12, "hit_cell": 24, "block_id": 36, "hit_point": 40, "hit_normal": 52 } },
-        "overlap_request": { "size": 24, "offsets": { "shape": 0, "pose": 8, "material_mask": 16 } },
+        "overlap_request": { "size": 28, "offsets": { "center": 0, "half_extents": 12, "material_mask": 24 } },
         "overlap_hit": { "size": 16, "offsets": { "cell": 0, "block_id": 12 } },
         "overlap_result": { "size": 24, "offsets": { "resolution": 0, "unresolved_section": 4, "actual_count": 16, "truncated": 20 } }
       }
@@ -470,12 +482,12 @@
       "sweep_request": {
         "kind": "struct",
         "fields": [
-          { "name": "shape", "type": "pointer" },
-          { "name": "pose", "type": "pointer" },
+          { "name": "center", "type": "world_point" },
+          { "name": "half_extents", "type": "world_point" },
           { "name": "displacement", "type": "world_point" },
           { "name": "material_mask", "type": "u32" }
         ],
-        "doc": "Caller-owned shape and pose descriptors, this-frame displacement, and material-class filter mask."
+        "doc": "The v1 shape is a world-space AABB inlined by value: center is the pose, half_extents the per-axis half sizes (finite and greater than zero). Plus this-frame displacement and the material-class filter mask. No pointer indirection — the shape layout belongs to this contract."
       },
       "sweep_result": {
         "kind": "struct",
@@ -495,12 +507,11 @@
       "overlap_request": {
         "kind": "struct",
         "fields": [
-          { "name": "shape", "type": "pointer" },
-          { "name": "pose", "type": "pointer" },
-          { "name": "material_mask", "type": "u32" },
-          { "name": "_reserved", "type": "bytes4" }
+          { "name": "center", "type": "world_point" },
+          { "name": "half_extents", "type": "world_point" },
+          { "name": "material_mask", "type": "u32" }
         ],
-        "doc": "Caller-owned shape and pose descriptors with a material-class filter mask."
+        "doc": "The v1 shape is a world-space AABB inlined by value: center is the pose, half_extents the per-axis half sizes (finite and greater than zero). Plus the material-class filter mask. Four-byte alignment leaves no tail padding, so no reserved field is carried."
       },
       "overlap_hit": {
         "kind": "struct",

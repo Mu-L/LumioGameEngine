@@ -183,8 +183,8 @@ typedef struct lumio_voxel_raycast_result_t {
 } lumio_voxel_raycast_result_t;
 
 typedef struct lumio_voxel_sweep_request_t {
-    void* shape;
-    void* pose;
+    lumio_voxel_world_point_t center;
+    lumio_voxel_world_point_t half_extents;
     lumio_voxel_world_point_t displacement;
     uint32_t material_mask;
 } lumio_voxel_sweep_request_t;
@@ -202,10 +202,9 @@ typedef struct lumio_voxel_sweep_result_t {
 } lumio_voxel_sweep_result_t;
 
 typedef struct lumio_voxel_overlap_request_t {
-    void* shape;
-    void* pose;
+    lumio_voxel_world_point_t center;
+    lumio_voxel_world_point_t half_extents;
     uint32_t material_mask;
-    uint8_t _reserved[4];
 } lumio_voxel_overlap_request_t;
 
 typedef struct lumio_voxel_overlap_hit_t {
