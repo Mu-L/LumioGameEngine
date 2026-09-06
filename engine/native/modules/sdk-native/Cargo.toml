@@ -13,6 +13,8 @@ lumio-voxel-world = { path = "../../../../../LumioVoxelEngine/crates/lumio-voxel
 lumio-voxel-domain = { path = "../../../../../LumioVoxelEngine/crates/lumio-voxel-domain" }
 lumio-voxel-ops = { path = "../../../../../LumioVoxelEngine/crates/lumio-voxel-ops" }
 lumio-voxel-contracts = { path = "../../../../../LumioVoxelEngine/crates/lumio-voxel-contracts" }
+# R-00477 物理查询三槽：唯一实现在 VoxelEngine 的 L4 投影层，Native 只做转发，不另建一套 DDA。
+lumio-voxel-project = { path = "../../../../../LumioVoxelEngine/crates/lumio-voxel-project" }
 # CoreCLR 装载链（MS-00002 Wave 2）：根表三槽直接转发到该 crate 的 ABI 实现，
 # 全链只有这一套 CLR Loader/ABI。
 lumio-clr-host = { path = "../clr-host" }
