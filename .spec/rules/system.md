@@ -16,6 +16,11 @@
 - **GAS 只能是实体上的一个组件。** 逻辑预测、客户端预表现与预测回滚一律经 GAS 做，不得在 GAS 之外另造预测机制；GAS 可以创建实体。
 - **判定必须按 [`architecture.md` §1.1](../knowledge/features/architecture.md) 的四问顺序**（先判「只有画面」，再判「要服务器逻辑」，再判「静态不动」），不得凭感觉归类。
 
+## 底层库（NativeCore）
+
+- **通用、领域无关的底层能力（资源身份、定时、调度、空间查询、状态机迁移）必须先用 NativeCore 已有实现**，目录见 [`native-core.md`](../knowledge/features/native-core.md)；没有的先向架构仓提需求，不得在上游仓另造一份「临时的」；是不是底层只能用「换一个游戏它还成立」一条判。
+- **引擎内一切状态机的迁移语义只能有一份实现：`lumio-hfsm`**（浏览器经同一份 Rust 编 WASM）；C# 与上游只持 Snapshot、算 Guard、执行 Action，不得手写第二套迁移算法（[ADR-069](../decisions/ADR-069-nativecore-audit-rulings.md)）。
+
 ## 协作 / 调度
 
 - **子 Agent 不得再派生别的子 Agent。** 调度权只在主 loop;被调用的子 Agent 只执行、不再派活(也符合宿主限制:subagent 不能再 spawn subagent)。
